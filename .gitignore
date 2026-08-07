@@ -1,0 +1,29 @@
+# Секреты — только на твоём компьютере, в репозиторий не попадают.
+secrets/channel.env
+secrets/*.env
+!secrets/channel.env.example
+*.token
+*.key
+*.pem
+
+# Зависимости движка — ставятся командой bun install.
+node_modules/
+dist/
+build/
+
+# Рабочее состояние агента — создаётся при запуске.
+state/
+**/state/
+update-offset
+*.log
+
+# Личная память агента — остаётся только у тебя (структуру храним, заметки нет).
+core/memory/*
+!core/memory/README.md
+!core/memory/.gitkeep
+
+# Прочее.
+.DS_Store
+# Только корневой .mcp.json (если появится) — плагину нужен свой,
+# dashi-plugin-claude-code/plugin/.mcp.json, его не трогаем.
+/.mcp.json

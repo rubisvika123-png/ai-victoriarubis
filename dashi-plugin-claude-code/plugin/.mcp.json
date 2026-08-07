@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "dashi-channel": {
+      "command": "bun",
+      "args": [
+        "./src/server.ts"
+      ]
+    }
+  }
+}

@@ -1,0 +1,21 @@
+ai-victoriarubis
+Copyright 2026 Victoria Rubis. All rights reserved.
+
+Материалы этого репозитория, КРОМЕ папки dashi-plugin-claude-code/, являются
+учебными материалами курса Виктории Рубис. Условия использования — см. файл
+LICENSE в корне репозитория.
+
+────────────────────────────────────────────────────────────────────────
+Стороннее программное обеспечение (bundled third-party software)
+────────────────────────────────────────────────────────────────────────
+
+Папка dashi-plugin-claude-code/ содержит независимый проект «dashi-channel»
+(мост Telegram ↔ Claude Code), поставляемый без изменений:
+
+    dashi-channel
+    Copyright 2026 Dashi Eshiev (qwwiwi)
+    Лицензия: Apache License 2.0
+
+Полный текст лицензии — dashi-plugin-claude-code/LICENSE. Этот компонент
+используется на условиях Apache-2.0; авторство сохранено. Лицензия LICENSE
+из корня репозитория на папку dashi-plugin-claude-code/ НЕ распространяется.
