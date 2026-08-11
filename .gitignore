@@ -12,8 +12,9 @@ dist/
 build/
 
 # Рабочее состояние агента — создаётся при запуске.
-state/
-**/state/
+# (Уже ловится dashi-plugin-claude-code/plugin/.gitignore -> /state/, anchored
+# to that folder. Unanchored patterns here previously also matched
+# src/state/ — real source code — and silently dropped it from the repo.)
 update-offset
 *.log
 
