@@ -55,6 +55,22 @@ set -a
 . "$ENV_FILE"
 set +a
 
+# 4.5. Некоторые сборки Claude Code не передают переменные окружения в
+#      MCP-сервер моста, который они сами запускают (известное поведение,
+#      у движка уже есть запасной способ — читать secrets/channel.env из
+#      папки TELEGRAM_STATE_DIR). Копируем туда настройки на каждый запуск,
+#      чтобы агент нашёл токен даже если прямая передача не сработает —
+#      без этого мост в таком случае падает молча, а сообщения в Telegram
+#      просто никем не читаются.
+STATE_DIR_VAL="${TELEGRAM_STATE_DIR:-$HOME/.claude/channels/dashi-telegram-canary}"
+case "$STATE_DIR_VAL" in
+  /*) STATE_DIR_ABS="$STATE_DIR_VAL" ;;
+  *)  STATE_DIR_ABS="$PLUGIN_DIR/$STATE_DIR_VAL" ;;
+esac
+mkdir -p "$STATE_DIR_ABS"
+cp "$ENV_FILE" "$STATE_DIR_ABS/.env"
+chmod 600 "$STATE_DIR_ABS/.env"
+
 # 5. Запуск. Заходим в папку движка, чтобы Claude Code нашёл его настройки
 #    моста (dashi-channel), а личность агента (CLAUDE.md) подхватил из корня
 #    репозитория, поднявшись по дереву папок вверх.
