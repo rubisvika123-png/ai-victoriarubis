@@ -312,6 +312,16 @@ tail -f ~/watchdog.log                    # смотрим лог в реаль�
 идут каждую минуту — значит, проверка связи в `pulse()` не узнала мост
 внутри обновлённого Claude; сверь этот кусок скрипта с инструкцией.
 
+Если сторож был поставлен раньше, по старой версии этой инструкции, приводить
+его в порядок руками не нужно — есть готовый скрипт, он меняет только `pulse()`
+и кладёт рядом копию старого файла:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/rubisvika123-png/ai-victoriarubis/main/scripts/fix-watchdog-pulse.py \
+  | python3 - /root/ai-victoriarubis/scripts/agent-watchdog.sh
+systemctl restart agent-watchdog agent
+```
+
 Проверку на «лимит закончился» вживую не устроить по щелчку (нужно
 дождаться реального момента, когда у агента кончится подписка на 5 часов).
 Но когда это случится в первый раз — открой `tmux attach -t my-agent` СРАЗУ,
