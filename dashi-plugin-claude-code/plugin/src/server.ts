@@ -187,24 +187,19 @@ try {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Stale poller PID check + token lock. Telegram allows exactly one
-// getUpdates consumer. If a previous session crashed its server.ts
-// grandchild can survive as an orphan and hold the slot forever. Kill
-// any stale holder, then acquire the bot.pid lock for ourselves before
-// starting the poller.
+// Token lock. Telegram allows exactly one getUpdates consumer, so the
+// first live holder of bot.pid keeps the slot and everyone else exits.
+//
+// We do NOT kill the holder. Doing so cost the owner her channel twice on
+// 2026-09-01: short-lived helper sessions (Claude's own conversation
+// summariser) start in this cwd, load this plugin, SIGTERM the healthy
+// poller as "stale", then exit themselves because the lock is taken —
+// leaving nobody polling and the agent silent in Telegram. A dead holder
+// is still cleaned up: tokenLock.acquire() overwrites a pid file whose
+// process is gone, and a wedged orphan is the watchdog's sweep() job.
 // ─────────────────────────────────────────────────────────────────────
 
 mkdirSync(statePaths.root, { recursive: true, mode: 0o700 })
-try {
-  const stale = parseInt(readFileSync(statePaths.pid, 'utf8'), 10)
-  if (stale > 1 && stale !== process.pid) {
-    process.kill(stale, 0)
-    log.warn('replacing stale poller', { pid: stale })
-    process.kill(stale, 'SIGTERM')
-  }
-} catch {
-  // No stale pid file or stale process already gone.
-}
 
 if (!tokenLock.acquire(statePaths)) {
   process.stderr.write(

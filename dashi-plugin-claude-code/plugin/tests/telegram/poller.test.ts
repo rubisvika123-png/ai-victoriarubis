@@ -119,6 +119,35 @@ describe('tokenLock', () => {
     expect(ok).toBe(true)
   })
 
+  test('a second server.ts leaves the live holder alone and exits', async () => {
+    // 2026-09-01: server.ts used to SIGTERM whoever held bot.pid before
+    // trying to acquire it. Short-lived helper sessions started in this cwd
+    // then killed the real poller and exited themselves — nobody polled and
+    // the owner's Telegram went quiet twice. The intruder must back off.
+    const holder = Bun.spawn({
+      cmd: [process.execPath, '-e', 'await new Promise(r=>setTimeout(r,30000))'],
+      stdio: ['ignore', 'ignore', 'ignore'],
+    })
+    try {
+      writeFileSync(paths.pid, String(holder.pid), { mode: 0o600 })
+      const intruder = Bun.spawn({
+        cmd: [process.execPath, join(import.meta.dir, '../../src/server.ts')],
+        env: { ...process.env, TELEGRAM_BOT_TOKEN: FAKE_TOKEN, TELEGRAM_STATE_DIR: stateDir },
+        stdio: ['ignore', 'ignore', 'pipe'],
+      })
+      const exitCode = await intruder.exited
+      const stderr = await new Response(intruder.stderr).text()
+
+      expect(exitCode).toBe(1)
+      expect(stderr).toContain('another poller holds bot.pid')
+      // The holder is still running and still owns the lock file.
+      expect(() => process.kill(holder.pid, 0)).not.toThrow()
+      expect(Number.parseInt(readFileSync(paths.pid, 'utf8').trim(), 10)).toBe(holder.pid)
+    } finally {
+      holder.kill()
+    }
+  })
+
   test('release removes pid file when we own it', () => {
     tokenLock.acquire(paths)
     expect(existsSync(paths.pid)).toBe(true)
