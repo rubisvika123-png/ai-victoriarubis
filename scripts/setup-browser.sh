@@ -179,8 +179,21 @@ echo
 echo "ГОТОВО. Браузер работает и поднимается сам после перезагрузки."
 echo
 if [ "$MCPDONE" = "1" ]; then
-  echo "Осталось перезапустить агента, чтобы он увидел браузер:"
-  echo "  systemctl restart agent-assistant"
+  # Имя автозапуска у ученика может отличаться от agent-assistant, поэтому
+  # ищем юнит, который запускает именно эту папку, и печатаем его имя.
+  AGENTDIR=$(dirname "$(dirname "$(dirname "$MCP")")")
+  UNITFILE=$(grep -ls -- "$AGENTDIR" /etc/systemd/system/*.service 2>/dev/null |
+    grep -v "/$UNIT.service" | head -1)
+  if [ -n "$UNITFILE" ]; then
+    AGENTUNIT=$(basename "$UNITFILE" .service)
+    echo "Осталось перезапустить агента, чтобы он увидел браузер:"
+    echo "  systemctl restart $AGENTUNIT"
+  else
+    echo "Осталось перезапустить агента, чтобы он увидел браузер."
+    echo "Имя его автозапуска я не нашёл — посмотри своё командой:"
+    echo "  systemctl list-unit-files 'agent-*'"
+    echo "и перезапусти: systemctl restart ИМЯ-ИЗ-СПИСКА"
+  fi
 else
   echo "Файл настроек агента не найден по пути:"
   echo "  $MCP"
