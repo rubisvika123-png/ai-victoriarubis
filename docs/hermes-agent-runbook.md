@@ -40,11 +40,15 @@ curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash -s -- --skip-
 hermes --version
 ```
 
-Должна быть строка вида `Hermes Agent v0.20.x`. Если команда не найдена —
-открыть новый вход в терминал или добавить `/usr/local/bin` в `PATH`.
+Должна быть строка вида `Hermes Agent v0.21.x`. Установщик сам ставит всё, что
+нужно (Python 3.11, Node.js, компилятор) — это занимает 3–6 минут. Перезаходить
+в терминал не требуется, `hermes` сразу доступен; если всё-таки «command not
+found» — `export PATH=/usr/local/bin:$PATH`.
 
 Дом нового агента после установки — `/root/.hermes` (настройки, характер,
 память). Это его единственная папка, беречь её.
+
+*Прогон с нуля на чистой Ubuntu 24.04 — 2026-09-03, версия v0.21.0.*
 
 ---
 
@@ -67,6 +71,39 @@ hermes config set model.default gpt-5.6-terra
 лимитам), `gpt-5.6-sol` и `gpt-5.6-sol-pro` (умнее, но медленнее и лимиты
 тратятся быстрее). Модели вида `gpt-5.6` без суффикса подписка отклоняет с
 ошибкой 400 — не предлагать.
+
+### Сразу убрать техническую болтовню
+
+Делать это **здесь**, до первого разговора, а не в конце. По умолчанию агент
+сыплет в чат служебными сообщениями («выполняю команду», «работаю 3 минуты»,
+«создан навык») — владельцу нужен только ответ:
+
+```
+hermes config set display.tool_progress off --force
+hermes config set display.show_reasoning false --force
+hermes config set display.show_commentary false --force
+hermes config set display.interim_assistant_messages false --force
+hermes config set display.long_running_notifications false --force
+hermes config set display.busy_ack_detail false --force
+hermes config set display.memory_notifications off --force
+hermes config set display.background_process_notifications off --force
+hermes config set display.file_mutation_verifier false --force
+hermes config set display.turn_completion_explainer false --force
+hermes config set display.credits_notices false --force
+hermes config set display.inline_diffs false --force
+hermes config set streaming.enabled false --force
+hermes config set compression.progress_notices false --force
+hermes config set telegram.gateway_restart_notification false --force
+```
+
+Главные из них для Telegram — `show_commentary` (модели GPT комментируют каждый
+свой шаг), `interim_assistant_messages` и `long_running_notifications`: по
+умолчанию они включены и дают ту самую очередь технических сообщений.
+
+`--force` нужен, потому что часть ключей не значится в справочнике версии, но
+шлюз их читает (проверено по исходникам `gateway/display_config.py`). Без
+`--force` команда всё равно сработает, но напечатает предупреждение и напугает
+владельца.
 
 ---
 
@@ -136,7 +173,7 @@ PY
 ```
 
 Хук начинает работать только после перезапуска шлюза (тогда он попадает в
-список разрешённых `shell-hooks-allowlist.json`). Перезапуск — на шаге 8.
+список разрешённых `shell-hooks-allowlist.json`). Перезапуск — на шаге 7.
 
 Проверка после перезапуска:
 
@@ -144,7 +181,7 @@ PY
 hermes hooks list
 ```
 
-В строке хука должно быть, что согласие получено. Живая проверка — на шаге 9.
+В строке хука должно быть, что согласие получено. Живая проверка — на шаге 8.
 
 ---
 
@@ -206,34 +243,7 @@ hermes config set platforms.telegram.enabled true
 
 ---
 
-## Шаг 7. Убрать техническую болтовню из чата
-
-По умолчанию Эрмес пишет в Telegram служебные сообщения («создан навык»,
-«бюджет итераций исчерпан», «шлюз перезапускается»). Владельцу нужен только
-ответ:
-
-```
-hermes config set display.show_reasoning false
-hermes config set display.tool_progress false
-hermes config set display.interim_assistant_messages false
-hermes config set display.long_running_notifications false
-hermes config set display.memory_notifications off
-hermes config set display.file_mutation_verifier false
-hermes config set display.turn_completion_explainer false
-hermes config set display.credits_notices false
-hermes config set display.busy_ack_enabled false
-hermes config set telegram.gateway_restart_notification false
-```
-
-На `display.busy_ack_enabled` Эрмес напишет, что ключ незнакомый — это
-нормально, шлюз его читает.
-
-Голос по-русски (если нужен) — отдельная настройка `stt.provider groq` плюс
-ключ Groq в `.env`; без ключа не включать.
-
----
-
-## Шаг 8. Автозапуск: агент поднимается сам
+## Шаг 7. Автозапуск: агент поднимается сам
 
 ```
 loginctl enable-linger root
@@ -242,7 +252,12 @@ hermes gateway status
 ```
 
 `enable-linger` нужен, чтобы служба работала без входа в терминал и после
-перезагрузки сервера. Статус должен показать работающий шлюз.
+перезагрузки сервера (установщик шлюза включает его и сам, команда лишней не
+будет). Статус должен показать работающий шлюз.
+
+Этот же запуск включает защиту из шага 4: при старте шлюз записывает хук в
+список разрешённых. Проверить — `hermes hooks list`, в строке хука должно быть
+`✓ allowed`.
 
 Логи, если что-то не так:
 
@@ -250,9 +265,17 @@ hermes gateway status
 journalctl --user -u hermes-gateway -n 50 --no-pager
 ```
 
+Неверный токен бота выглядит так: служба падает сразу со строкой
+`Telegram bot token rejected` и больше не поднимается (это защита от
+бесконечных перезапусков, а не поломка). Исправить токен в `.env` и
+`hermes gateway restart`.
+
+Голос по-русски (если нужен) — отдельная настройка `stt.provider groq` плюс
+ключ Groq в `.env`; без ключа не включать.
+
 ---
 
-## Шаг 9. Проверка (обязательно, до отчёта владельцу)
+## Шаг 8. Проверка (обязательно, до отчёта владельцу)
 
 1. **Модель:** `hermes -z "ответь одним словом: ОК"` → пришёл ответ.
 2. **Бот:** владелец пишет боту в Telegram «привет» → бот отвечает. Чужой
@@ -286,7 +309,7 @@ ls -la /root/.hermes/kanareyka
 | Ошибка 400 про модель | Подписка не разрешает эту модель — поставить `gpt-5.6-terra` |
 | Бот молчит | Проверить `hermes gateway status` и логи; частая причина — опечатка в токене |
 | Бот отвечает не тем характером | Старый разговор: написать боту `/new` |
-| Бот пишет служебные сообщения | Пропущен шаг 7, после правок `hermes gateway restart` |
+| Бот пишет служебные сообщения | Пропущен блок «убрать болтовню» на шаге 2, после правок `hermes gateway restart` |
 | Хук не срабатывает | `hermes hooks list` → нет согласия → `hermes gateway restart` |
 
 ---
