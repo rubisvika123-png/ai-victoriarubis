@@ -87,6 +87,11 @@ export HOME="${HOME:-/root}"
 # движок моста. Без этих двух папок в путях перезапущенный агент падает с
 # ошибкой "claude: No such file or directory".
 export PATH="$HOME/.local/bin:$HOME/.bun/bin:$PATH"
+# Сторож — системная служба (root, не пользовательская сессия), а команды
+# `systemctl --user` (для Hermes-агентов) без этого не видят службы вообще:
+# молча решают, что агент упал, хотя он жив. Нужно, даже если Hermes-агентов
+# пока нет.
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/0}"
 
 LOG="${WATCHDOG_LOG:-$HOME/watchdog.log}"
 INTERVAL="${WATCHDOG_INTERVAL:-5}"
@@ -98,8 +103,18 @@ declare -A AGENTS=(
   [my-agent]="/path/to/your/agent"
 )
 
+# Агент на ДРУГОМ движке (Hermes) — не тмукс-сессия, а systemd-служба, живёт
+# по своим правилам. Пусто, пока такого агента нет; появится — впиши сюда имя
+# службы и путь к его дому (см. раздел про Hermes ниже, после Шага 3).
+declare -A HERMES=()
+declare -A HERMES_WHO=()
+
 declare -A LAST_RESTART=()
 declare -A LIMIT_NOTIFIED=()
+declare -A HERMES_DOWN=()
+declare -A HERMES_NOTIFIED=()
+declare -A HERMES_RESTARTED=()
+DOWN_AFTER="${WATCHDOG_HERMES_DOWN_AFTER:-3}"
 
 log() { echo "$(date '+%F %T') $*" >>"$LOG" 2>/dev/null || true; }
 
@@ -176,16 +191,51 @@ sweep() {
 # писать должен кто-то другой). Токен и Telegram ID владельца берутся из
 # secrets/channel.env агента — тех же, что и сам агент использует.
 notify_owner() {
-  local dir="$1" msg="$2" env_file token uid
-  env_file="$dir/secrets/channel.env"
+  local src="$1" msg="$2" env_file token uid
+  # Обычный агент передаёт свою ПАПКУ (токен в secrets/channel.env), а
+  # Hermes-профиль передаёт свой файл .env напрямую — раскладка своя, а
+  # смысл тот же: токен бота и твой Telegram-id.
+  if [ -f "$src" ]; then env_file="$src"; else env_file="$src/secrets/channel.env"; fi
   token=$(grep -m1 '^TELEGRAM_BOT_TOKEN=' "$env_file" 2>/dev/null | cut -d= -f2-)
-  uid=$(grep -m1 '^TELEGRAM_ALLOWED_USER_IDS=' "$env_file" 2>/dev/null | cut -d= -f2- | cut -d, -f1)
+  uid=$(grep -m1 -E '^TELEGRAM_ALLOWED_USER_IDS=|^TELEGRAM_ALLOWED_USERS=' "$env_file" 2>/dev/null | cut -d= -f2- | cut -d, -f1)
   if [ -z "$token" ] || [ -z "$uid" ]; then
     log "notify_owner: missing token/user id in $env_file"
     return 1
   fi
   curl -s -m 10 "https://api.telegram.org/bot${token}/sendMessage" \
     --data-urlencode "chat_id=${uid}" --data-urlencode "text=${msg}" >/dev/null
+}
+
+# check_hermes UNIT DIR WHO — для агента на Hermes: это не тмукс-сессия, а
+# systemd-служба пользователя. Если она не "active" три проверки подряд —
+# пробуем поднять сама (reset-failed нужен, если systemd уже сдался) и один
+# раз пишем владельцу от бота ЭТОГО агента. Восстановление — молча, отдельное
+# сообщение об этом было бы просто шумом.
+check_hermes() {
+  local unit="$1" dir="$2" who="$3" state
+  state=$(systemctl --user is-active "$unit" 2>/dev/null)
+
+  if [ "$state" = "active" ]; then
+    HERMES_DOWN[$unit]=0
+    HERMES_NOTIFIED[$unit]=""
+    HERMES_RESTARTED[$unit]=""
+    return 0
+  fi
+
+  HERMES_DOWN[$unit]=$(( ${HERMES_DOWN[$unit]:-0} + 1 ))
+  [ "${HERMES_DOWN[$unit]}" -ge "$DOWN_AFTER" ] || return 0
+
+  if [ -z "${HERMES_RESTARTED[$unit]:-}" ]; then
+    HERMES_RESTARTED[$unit]=1
+    systemctl --user reset-failed "$unit" 2>/dev/null
+    systemctl --user restart "$unit" 2>/dev/null
+    log "hermes unit $unit is ${state:-unknown} — tried to revive it"
+  fi
+
+  [ -n "${HERMES_NOTIFIED[$unit]:-}" ] && return 0
+  notify_owner "$dir/.env" "${who}: я не работаю и не отвечаю в чате. Пробую подняться сама. Если через пару минут молчу — скажи тех-спецу." \
+    && HERMES_NOTIFIED[$unit]=1
+  log "hermes unit $unit is ${state:-unknown} — notified owner"
 }
 
 # Ловит момент "кончился лимит Claude" в две стадии.
@@ -243,6 +293,9 @@ main() {
       sweep  "$name" "${AGENTS[$name]}"
       pulse  "$name"
       check_limit "$name" "${AGENTS[$name]}"
+    done
+    for unit in "${!HERMES[@]}"; do
+      check_hermes "$unit" "${HERMES[$unit]}" "${HERMES_WHO[$unit]}"
     done
     sleep "$INTERVAL"
   done
@@ -332,6 +385,42 @@ systemctl restart agent-watchdog agent
 написано на экране в этот момент, и поправь регэксп в `check_limit()` под
 точный текст (только формулировку баннера с временем сброса, само меню уже
 проверено вживую и трогать не нужно).
+
+---
+
+## Если один из твоих агентов — на другом движке (Hermes)
+
+Актуально только после урока 10 (второй движок, Hermes). Такой агент — не
+tmux-сессия, а systemd-служба пользователя (`hermes-gateway-ИМЯ.service`),
+живёт совсем по-другому: нет окна терминала, чтобы в него заглянуть, зато
+сам `systemd` уже знает, жива служба или нет — сторожу для неё не нужны
+`ensure`/`pulse`/`sweep`, только `check_hermes` (уже есть в скрипте выше).
+
+Впиши службу в `HERMES` рядом с `AGENTS`, в начале скрипта:
+
+```bash
+declare -A HERMES=(
+  [hermes-gateway-demo.service]="/root/.hermes/profiles/demo"
+)
+declare -A HERMES_WHO=(
+  [hermes-gateway-demo.service]="Техспец на Гермесе"
+)
+```
+
+Слева — точное имя systemd-службы этого агента (посмотреть: `hermes --profile
+ИМЯ gateway status`, оно в самой первой строке). Справа — путь к папке
+профиля: там лежит `.env` с токеном бота, из него сторож пишет владельцу.
+
+Перезапусти сторожа, чтобы он подхватил новый агент:
+
+```bash
+systemctl restart agent-watchdog
+```
+
+Проверка: останови службу агента вручную (`systemctl --user stop
+hermes-gateway-demo`) и подожди три прохода сторожа (по умолчанию 15 секунд).
+В `~/watchdog.log` должна появиться строка `tried to revive it`, служба —
+снова `active`, и в Telegram — сообщение от бота этого агента.
 
 ---
 
