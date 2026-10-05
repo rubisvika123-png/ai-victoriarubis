@@ -157,6 +157,16 @@ function buildMeta(
     user_id: decision.senderId,
     ts: new Date().toISOString(),
   }
+  // Sender's display name/handle so the agent can greet by name (e.g. course
+  // curator addressing a student). first_name is always present on Telegram;
+  // last_name/username are optional. ponytail: single-message path only —
+  // albums (multi-photo) don't plumb the sender name, rare enough to skip.
+  const from = ctx.from
+  if (from) {
+    const name = [from.first_name, from.last_name].filter(Boolean).join(' ').trim()
+    if (name) meta.user_name = name
+    if (from.username) meta.user_username = from.username
+  }
   if (ctx.message?.message_id !== undefined) {
     meta.message_id = String(ctx.message.message_id)
   }

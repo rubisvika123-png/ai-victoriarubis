@@ -183,16 +183,26 @@ function makeCtx(opts: {
   chatId: number
   chatType: 'private' | 'group' | 'supergroup'
   fromId: number
+  firstName?: string
+  lastName?: string
+  username?: string
 }): Context {
+  const from = {
+    id: opts.fromId,
+    is_bot: false,
+    first_name: opts.firstName ?? 'x',
+    ...(opts.lastName ? { last_name: opts.lastName } : {}),
+    ...(opts.username ? { username: opts.username } : {}),
+  }
   return {
     chat: { id: opts.chatId, type: opts.chatType },
-    from: { id: opts.fromId, is_bot: false, first_name: 'x' },
+    from,
     message: {
       message_id: 42,
       date: 1700000000,
       text: opts.text,
       chat: { id: opts.chatId, type: opts.chatType },
-      from: { id: opts.fromId, is_bot: false, first_name: 'x' },
+      from,
     },
   } as unknown as Context
 }
@@ -318,6 +328,32 @@ describe('handleInboundText — OOB allowed_chat_ids gate (Fix 6)', () => {
 
     // OOB handled inline — no channel notify for /help.
     expect(serverSpy.calls.length).toBe(0)
+    rmSync(statePaths.root, { recursive: true, force: true })
+  })
+})
+
+describe('handleInboundText — sender name in meta (greet by name)', () => {
+  test('meta carries user_name (first+last) and user_username', async () => {
+    const config = makeConfig({ allowed_user_ids: [164795011], allowed_chat_ids: [164795011] })
+    const serverSpy = makeServerSpy()
+    const tg = makeTelegramApi()
+    const { deps, statePaths } = makeDeps({ config, server: serverSpy.server, telegramApi: tg.api })
+    const ctx = makeCtx({
+      text: 'Привет! А как установить Claude?',
+      chatId: 164795011,
+      chatType: 'supergroup',
+      fromId: 164795011,
+      firstName: 'Иван',
+      lastName: 'Петров',
+      username: 'ivan_p',
+    })
+
+    await handleInboundText(ctx, deps)
+
+    expect(serverSpy.calls.length).toBe(1)
+    const meta = (serverSpy.calls[0]!.params as { meta: Record<string, string> }).meta
+    expect(meta.user_name).toBe('Иван Петров')
+    expect(meta.user_username).toBe('ivan_p')
     rmSync(statePaths.root, { recursive: true, force: true })
   })
 })
