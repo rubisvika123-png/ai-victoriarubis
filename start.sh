@@ -76,10 +76,10 @@ chmod 600 "$STATE_DIR_ABS/.env"
 # 5. Запуск. Заходим в папку движка, чтобы Claude Code нашёл его настройки
 #    моста (dashi-channel), а личность агента (CLAUDE.md) подхватил из корня
 #    репозитория, поднявшись по дереву папок вверх.
-echo "Запускаю агента... (остановить — Ctrl+C)"
+echo "Запускаю агента... (выйти из чата с агентом — команда /exit)"
 echo "Теперь напиши своему боту в Telegram — он ответит."
 cd "$PLUGIN_DIR"
 exec env IS_SANDBOX=1 claude \
   --dangerously-skip-permissions \
-  --model claude-sonnet-4-6 \
+  --model claude-opus-5 \
   --dangerously-load-development-channels server:dashi-channel
