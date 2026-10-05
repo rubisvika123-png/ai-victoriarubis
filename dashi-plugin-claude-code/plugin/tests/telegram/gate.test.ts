@@ -76,7 +76,7 @@ describe('gateTelegramMessage', () => {
     if (decision.kind === 'drop') expect(decision.reason).toBe('missing_sender')
   })
 
-  test('drops group and supergroup messages in Scope A', () => {
+  test('drops group/supergroup messages when chat id is not allowlisted', () => {
     const group: GateInput = {
       chatType: 'group',
       chatId: '-1001234567890',
@@ -89,8 +89,38 @@ describe('gateTelegramMessage', () => {
     const sg = gateTelegramMessage(supergroup, makeConfig())
     expect(g.kind).toBe('drop')
     expect(sg.kind).toBe('drop')
-    if (g.kind === 'drop') expect(g.reason).toBe('not_dm')
-    if (sg.kind === 'drop') expect(sg.reason).toBe('not_dm')
+    if (g.kind === 'drop') expect(g.reason).toBe('chat_not_allowed')
+    if (sg.kind === 'drop') expect(sg.reason).toBe('chat_not_allowed')
+  })
+
+  test('curator mode: allows any student in an allowlisted group', () => {
+    const cfg = makeConfig({ allowed_chat_ids: [-1001234567890] })
+    // A student NOT in allowed_user_ids still gets answered in the group.
+    const input: GateInput = {
+      chatType: 'supergroup',
+      chatId: '-1001234567890',
+      senderId: '555111222',
+      isBot: false,
+    }
+    const decision = gateTelegramMessage(input, cfg)
+    expect(decision.kind).toBe('allow')
+    if (decision.kind === 'allow') {
+      expect(decision.chatId).toBe('-1001234567890')
+      expect(decision.senderId).toBe('555111222')
+    }
+  })
+
+  test('curator mode: never answers other bots in the group', () => {
+    const cfg = makeConfig({ allowed_chat_ids: [-1001234567890] })
+    const input: GateInput = {
+      chatType: 'supergroup',
+      chatId: '-1001234567890',
+      senderId: '777888999',
+      isBot: true,
+    }
+    const decision = gateTelegramMessage(input, cfg)
+    expect(decision.kind).toBe('drop')
+    if (decision.kind === 'drop') expect(decision.reason).toBe('sender_not_allowed')
   })
 
   test('drops channel posts', () => {

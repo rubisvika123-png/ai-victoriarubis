@@ -111,6 +111,7 @@ export const RuntimeEnvSchema = z.object({
   TELEGRAM_CONFIG_FILE: z.string().optional(),
   TELEGRAM_EXPECTED_BOT_ID: z.coerce.number().int().positive().optional(),
   TELEGRAM_ALLOWED_USER_IDS: z.string().optional(), // CSV
+  TELEGRAM_ALLOWED_CHAT_IDS: z.string().optional(), // CSV (group ids are negative)
   TELEGRAM_WORKSPACE_ROOT: z.string().optional(),
   TELEGRAM_STATUS_INTERVAL_MS: z.coerce.number().int().positive().optional(),
   TELEGRAM_ALBUM_FLUSH_MS: z.coerce.number().int().positive().optional(),
@@ -204,6 +205,22 @@ function parseCsvUserIds(csv: string): number[] {
   return ids
 }
 
+// Group/supergroup chat ids are NEGATIVE in Telegram (e.g. -1001234567890),
+// so unlike user ids we allow negatives here — just not zero.
+function parseCsvChatIds(csv: string): number[] {
+  const ids: number[] = []
+  for (const raw of csv.split(',')) {
+    const trimmed = raw.trim()
+    if (!trimmed) continue
+    const n = Number(trimmed)
+    if (!Number.isInteger(n) || n === 0) {
+      throw new Error(`invalid chat id in CSV: ${JSON.stringify(trimmed)}`)
+    }
+    ids.push(n)
+  }
+  return ids
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
   let parsedEnv: RuntimeEnv
   try {
@@ -243,6 +260,9 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
   }
   if (parsedEnv.TELEGRAM_ALLOWED_USER_IDS !== undefined) {
     merged.allowed_user_ids = parseCsvUserIds(parsedEnv.TELEGRAM_ALLOWED_USER_IDS)
+  }
+  if (parsedEnv.TELEGRAM_ALLOWED_CHAT_IDS !== undefined) {
+    merged.allowed_chat_ids = parseCsvChatIds(parsedEnv.TELEGRAM_ALLOWED_CHAT_IDS)
   }
   if (parsedEnv.TELEGRAM_WORKSPACE_ROOT !== undefined) {
     merged.workspace_root = parsedEnv.TELEGRAM_WORKSPACE_ROOT

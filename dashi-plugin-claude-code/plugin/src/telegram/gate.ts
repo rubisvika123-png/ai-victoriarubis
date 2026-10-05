@@ -40,6 +40,25 @@ function toStringSet(values: ReadonlyArray<number | string>): Set<string> {
 }
 
 export function gateTelegramMessage(input: GateInput, config: AppConfig): GateDecision {
+  // Group/supergroup ("curator") mode: the agent lives in a course group and
+  // answers every student, so we gate on the CHAT id (allowed_chat_ids), not
+  // the sender — students are not individually allowlisted. Other bots are
+  // never answered, to avoid bot-to-bot loops. This path stays fully inert
+  // for DM-only agents: their allowed_chat_ids never matches a real group.
+  if (input.chatType === 'group' || input.chatType === 'supergroup') {
+    if (input.senderId === undefined || input.senderId === '') {
+      return { kind: 'drop', reason: 'missing_sender' }
+    }
+    if (input.isBot) {
+      return { kind: 'drop', reason: 'sender_not_allowed' }
+    }
+    const allowedChats = toStringSet(config.allowed_chat_ids)
+    if (input.chatId === undefined || !allowedChats.has(input.chatId)) {
+      return { kind: 'drop', reason: 'chat_not_allowed' }
+    }
+    return { kind: 'allow', senderId: input.senderId, chatId: input.chatId }
+  }
+
   if (input.chatType !== 'private') {
     return { kind: 'drop', reason: 'not_dm' }
   }
