@@ -189,30 +189,30 @@ describe('StatusManager.start', () => {
 
   test('start finalises previous active status before opening a new one', async () => {
     // M3 fix: only one active status per chat. Calling start() twice in a
-    // row must edit the prior message to a terminal label ("Остановлено:
-    // superseded") before sending the new typing message, otherwise the
-    // album path leaks stale pulsing status messages.
+    // row must silently delete the prior message before sending the new
+    // typing message, otherwise the album path leaks stale pulsing status
+    // messages. It used to edit the old message to a visible "Остановлено:
+    // superseded" label instead of deleting it — that read as an error to
+    // the (non-technical) chat owner, so it's now a silent delete.
     const { mgr, api } = makeManager()
     const firstHandle = await mgr.start('164795011', undefined)
     expect(api.calls.filter((c) => c.kind === 'send').length).toBe(1)
     await mgr.start('164795011', undefined)
-    const edits = api.calls.filter((c) => c.kind === 'edit')
-    expect(edits.length).toBeGreaterThanOrEqual(1)
-    // The cancel-edit targets the FIRST message id and ends with "superseded".
-    const cancelEdit = edits.find((e) => e.messageId === firstHandle.messageId)
-    expect(cancelEdit).toBeDefined()
-    expect(cancelEdit!.text).toContain('Остановлено')
-    expect(cancelEdit!.text).toContain('superseded')
+    const deletes = api.calls.filter((c) => c.kind === 'delete')
+    expect(deletes.length).toBe(1)
+    expect(deletes[0]!.messageId).toBe(firstHandle.messageId)
+    // No edit calls — the previous message is deleted, not relabeled.
+    expect(api.calls.filter((c) => c.kind === 'edit').length).toBe(0)
     // Two distinct send calls — one per start().
     expect(api.calls.filter((c) => c.kind === 'send').length).toBe(2)
   })
 
-  test('start cancel-edit on the previous status survives a "message not modified" error', async () => {
+  test('start survives a failed delete of the previous status', async () => {
     const { mgr, api } = makeManager()
     await mgr.start('164795011', undefined)
-    // Force the cancel-edit on the previous status to fail with the
-    // benign "not modified" error — start() must still complete.
-    api.failEditWith = new Error('Bad Request: message is not modified')
+    // Force the delete of the previous status to fail — start() must
+    // still complete and open the new status.
+    api.failDeleteWith = new Error('Bad Request: message to delete not found')
     await mgr.start('164795011', undefined)
     expect(mgr.isActive('164795011')).toBe(true)
   })
@@ -344,30 +344,66 @@ describe('StatusManager.cancel', () => {
   })
 })
 
+async function drain(): Promise<void> {
+  for (let i = 0; i < 5; i++) await Promise.resolve()
+}
+
 describe('StatusManager interval ticker', () => {
   test('advancing time triggers periodic edits (dot animation)', async () => {
     const { mgr, api, clock } = makeManager()
     await mgr.start('164795011', undefined)
-    // Two ticks visible to network: tick 1 → "Печатает.." (2 dots), tick 2 →
-    // "Печатает..." (3 dots). Tick 3 would cycle back to "Печатает." which
-    // matches lastText (the initial text) and is intentionally skipped to
-    // avoid a "message is not modified" round-trip. Drain microtasks to let
-    // each editSafely settle before inspecting.
-    clock.advance(700)
-    await Promise.resolve(); await Promise.resolve()
-    clock.advance(700)
-    await Promise.resolve(); await Promise.resolve()
-    clock.advance(700)
-    await Promise.resolve(); await Promise.resolve()
+    // The dot animation advances on every tick, but the message is edited
+    // at most once per TICK_MIN_EDIT_GAP_MS (4 s) — see the flood test below.
+    clock.advance(4200)
+    await drain()
+    clock.advance(4200)
+    await drain()
     const edits = api.calls.filter((c) => c.kind === 'edit')
     expect(edits.length).toBeGreaterThanOrEqual(2)
-    // Each edit text should still contain "Печатает".
     for (const e of edits) {
       expect(e.text).toContain('Печатает')
     }
-    // First two edits cycle 2→3 dots.
-    expect(edits[0]!.text).toContain('Печатает..')
-    expect(edits[1]!.text).toContain('Печатает...')
+  })
+
+  test('long task: animation edits at most once per 4 s, not every tick', async () => {
+    // 13.10.2026: a 700 ms tick edited the status ~85 times a minute during a
+    // multi-minute tool run and Telegram banned Stepan's bot for 15.5 h.
+    const { mgr, api, clock } = makeManager()
+    await mgr.start('164795011', undefined)
+    for (let i = 0; i < 60; i++) {
+      clock.advance(1000)
+      await drain()
+    }
+    const edits = api.calls.filter((c) => c.kind === 'edit').length
+    expect(edits).toBeLessThanOrEqual(16)
+    expect(edits).toBeGreaterThanOrEqual(5)
+  })
+
+  test('after a 429 the status goes silent until retry_after passes', async () => {
+    const { mgr, api, clock } = makeManager()
+    await mgr.start('164795011', undefined)
+    api.failEditWith = new Error(
+      "Call to 'editMessageText' failed! (429: Too Many Requests: retry after 600)",
+    )
+    // Run until the first (429-failing) edit has actually gone out.
+    while (!api.calls.some((c) => c.kind === 'edit')) {
+      clock.advance(700)
+      await drain()
+    }
+    const callsAfterBan = api.calls.length
+    // Ten minutes of ticks and chat-action pulses inside the ban: zero calls.
+    for (let i = 0; i < 590; i++) {
+      clock.advance(1000)
+      await drain()
+    }
+    expect(api.calls.slice(callsAfterBan).map((c) => c.kind)).toEqual([])
+    // Ban over: edits resume.
+    delete api.failEditWith
+    for (let i = 0; i < 20; i++) {
+      clock.advance(1000)
+      await drain()
+    }
+    expect(api.calls.length).toBeGreaterThan(callsAfterBan)
   })
 
   test('tick stops after complete', async () => {
@@ -383,21 +419,41 @@ describe('StatusManager interval ticker', () => {
 })
 
 describe('StatusManager TTL guard', () => {
-  test('auto-cancels after ttl_ms with reason="ttl"', async () => {
-    const config = makeConfig({ ttl_ms: 5000 })
+  test('after ttl_ms says «Ещё работаю» and stays alive (Вика 07.10)', async () => {
+    // A long task is not a stopped task. «Остановлено» after 5 minutes made
+    // the owner think the agent froze while it was still working.
+    const config = makeConfig({ ttl_ms: 5000, interval_ms: 100_000 })
     const { mgr, api, clock } = makeManager({ config })
     await mgr.start('164795011', undefined)
-    expect(mgr.isActive('164795011')).toBe(true)
     clock.advance(5000)
-    // The TTL fires cancel(), which is async. Drain microtasks.
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(mgr.isActive('164795011')).toBe(true)
+    const edits = api.calls.filter((c) => c.kind === 'edit')
+    expect(edits[edits.length - 1]!.text).toContain('Ещё работаю')
+    expect(edits.some((e) => (e.text ?? '').includes('Остановлено'))).toBe(false)
+  })
+
+  test('hard cap: still no reply after 12 x ttl_ms finally stops it', async () => {
+    const config = makeConfig({ ttl_ms: 5000, interval_ms: 100_000 })
+    const { mgr, api, clock } = makeManager({ config })
+    await mgr.start('164795011', undefined)
+    clock.advance(5000 * 12)
     await Promise.resolve()
     await Promise.resolve()
     expect(mgr.isActive('164795011')).toBe(false)
     const edits = api.calls.filter((c) => c.kind === 'edit')
-    // Last edit must be the "Остановлено: ttl" finalization. (Interval
-    // ticks may also have fired before TTL — we only check the final one.)
-    expect(edits[edits.length - 1]!.text).toContain('Остановлено')
     expect(edits[edits.length - 1]!.text).toContain('ttl')
+  })
+
+  test('reply after the «Ещё работаю» phase removes the status', async () => {
+    const config = makeConfig({ ttl_ms: 5000, interval_ms: 100_000 })
+    const { mgr, clock } = makeManager({ config })
+    await mgr.start('164795011', undefined)
+    clock.advance(6000)
+    await Promise.resolve()
+    await mgr.complete('164795011')
+    expect(mgr.isActive('164795011')).toBe(false)
   })
 
   test('complete before TTL prevents auto-cancel firing', async () => {

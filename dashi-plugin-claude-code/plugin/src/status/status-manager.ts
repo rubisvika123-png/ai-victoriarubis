@@ -34,6 +34,19 @@ import {
 // timer to keep the header animation continuous without spamming the API.
 const CHAT_ACTION_PULSE_MS = 4000
 
+// The ticker animates every interval_ms, but the message itself is edited at
+// most this often. 13.10.2026: a 700 ms edit cadence during a multi-minute
+// tool run got Stepan's bot a 15.5 h Telegram flood ban.
+const TICK_MIN_EDIT_GAP_MS = 4000
+
+// "429: Too Many Requests: retry after 55441" → 55441 (seconds), else null.
+function retryAfterSeconds(err: unknown): number | null {
+  const msg = err instanceof Error ? err.message : String(err)
+  if (!/429|Too Many Requests/i.test(msg)) return null
+  const m = /retry after (\d+)/i.exec(msg)
+  return m ? Number(m[1]) : 1
+}
+
 // All active StatusStates map to a single `typing` action. Tool-specific
 // actions (`upload_document`, etc.) are not used today because Telegram's
 // header animation is the same for `typing` and we want to keep the contract
@@ -44,6 +57,7 @@ function chatActionFor(state: StatusState): ChatAction | null {
     case 'thinking':
     case 'tool':
     case 'activity':
+    case 'working':
       return 'typing'
     case 'stopped':
     case 'error':
@@ -56,6 +70,7 @@ export type StatusState =
   | { kind: 'thinking' }
   | { kind: 'tool'; toolName: string }
   | { kind: 'activity'; snapshot: ActivitySnapshot }
+  | { kind: 'working' }
   | { kind: 'stopped'; reason?: string }
   | { kind: 'error'; reason?: string }
 
@@ -104,6 +119,9 @@ interface InternalEntry {
   // Cycle index used to advance the dot animation on each tick.
   tick: number
   lastText: string
+  // When the message was last edited; the ticker skips edits closer than
+  // TICK_MIN_EDIT_GAP_MS to it.
+  lastEditAt: number
   intervalHandle: NodeJS.Timeout | null
   ttlHandle: NodeJS.Timeout | null
   // Separate cadence from the message edit ticker — see CHAT_ACTION_PULSE_MS.
@@ -141,6 +159,8 @@ function renderState(state: StatusState, tick: number, nowMs: number): string {
       return `<i>🔧 ${escapeHtml(state.toolName)}</i>`
     case 'activity':
       return renderActivityBlock(state.snapshot, nowMs)
+    case 'working':
+      return `<i>Ещё работаю${dots}</i>`
     case 'stopped': {
       const tail = state.reason ? `: ${escapeHtml(state.reason)}` : ''
       return `<i>Остановлено${tail}</i>`
@@ -160,6 +180,8 @@ export class StatusManager {
   private readonly setTimer: (cb: () => void, ms: number) => NodeJS.Timeout
   private readonly clearTimer: (handle: NodeJS.Timeout) => void
   private readonly entries: Map<string, InternalEntry>
+  // Epoch ms until which Telegram asked us to stop calling (429 retry_after).
+  private floodUntil = 0
 
   constructor(deps: StatusManagerDeps) {
     this.telegramApi = deps.telegramApi
@@ -187,13 +209,29 @@ export class StatusManager {
     replyToMessageId: number | undefined,
     initialState: StatusState = { kind: 'typing' },
   ): Promise<StatusHandle> {
-    // Only one active status per chat at a time: finalise the previous one
-    // (edit the old message to "Остановлено: superseded" and clear timers)
-    // so we don't leak a stale "Печатает…" message on top of the new one.
+    // Only one active status per chat at a time: silently drop the previous
+    // one (delete its message if we can, else just stop its timers) so we
+    // don't leak a stale "Печатает…" message on top of the new one. It's
+    // about to be replaced 1:1 by the new status message below, so editing
+    // it to a visible "Остановлено: superseded" label (the old behaviour)
+    // only confused the owner — it reads as an error in a live chat.
     // Album-path callers in handlers.ts call start() once per album item;
     // without this terminate step the first item's pulse stays forever.
-    if (this.entries.has(chatId)) {
-      await this.cancel(chatId, 'superseded')
+    const previous = this.entries.get(chatId)
+    if (previous) {
+      this.stopTimers(previous)
+      this.entries.delete(chatId)
+      if (this.telegramApi.deleteMessage) {
+        try {
+          await this.telegramApi.deleteMessage(chatId, previous.handle.messageId)
+        } catch (err) {
+          this.log.debug('superseded status delete failed (ignored)', {
+            chat_id: chatId,
+            message_id: previous.handle.messageId,
+            error: err instanceof Error ? err.message : String(err),
+          })
+        }
+      }
     }
 
     const text = renderState(initialState, 0, this.now())
@@ -226,6 +264,7 @@ export class StatusManager {
       state: initialState,
       tick: 0,
       lastText: text,
+      lastEditAt: this.now(),
       intervalHandle: null,
       ttlHandle: null,
       chatActionHandle: null,
@@ -255,18 +294,30 @@ export class StatusManager {
       if (!live || live.handle.messageId !== handle.messageId) return
       live.tick += 1
       const next = renderState(live.state, live.tick, this.now())
-      void this.editSafely(live, next)
+      if (this.now() - live.lastEditAt >= TICK_MIN_EDIT_GAP_MS) {
+        void this.editSafely(live, next)
+      }
       // Re-arm next tick.
       live.intervalHandle = this.setTimer(tick, this.config.status.interval_ms)
     }
     entry.intervalHandle = this.setTimer(tick, this.config.status.interval_ms)
 
-    // TTL guard. On expiry we cancel with reason='ttl' so the message turns
-    // into "Остановлено: ttl" rather than vanishing silently.
+    // After ttl_ms a long task is NOT a stopped one (Вика 07.10.2026: «Остановлено»
+    // after 5 minutes read as a frozen agent while it was still working). Switch
+    // the label to «Ещё работаю…» and keep it until the reply removes it; only a
+    // hard cap of 12 x ttl_ms finally gives up, so a truly stuck status can't
+    // pulse forever.
     entry.ttlHandle = this.setTimer(() => {
       const live = this.entries.get(chatId)
       if (!live || live.handle.messageId !== handle.messageId) return
-      void this.cancel(chatId, 'ttl')
+      live.state = { kind: 'working' }
+      live.tick = 0
+      void this.editSafely(live, renderState(live.state, 0, this.now()))
+      live.ttlHandle = this.setTimer(() => {
+        const still = this.entries.get(chatId)
+        if (!still || still.handle.messageId !== handle.messageId) return
+        void this.cancel(chatId, 'ttl')
+      }, this.config.status.ttl_ms * 11)
     }, this.config.status.ttl_ms)
 
     return handle
@@ -490,6 +541,9 @@ export class StatusManager {
   // ───── internals ─────
 
   private async editSafely(entry: InternalEntry, text: string): Promise<void> {
+    // Inside a flood ban every extra call is wasted (and keeps the bot on
+    // Telegram's radar) — stay silent until retry_after has passed.
+    if (this.now() < this.floodUntil) return
     if (text === entry.lastText) {
       // Skip the network roundtrip; Telegram would respond with "message is
       // not modified" anyway and we'd swallow it.
@@ -503,7 +557,9 @@ export class StatusManager {
         { parse_mode: 'HTML' },
       )
       entry.lastText = text
+      entry.lastEditAt = this.now()
     } catch (err) {
+      if (this.noteFlood(err)) return
       if (isMessageNotModifiedError(err)) {
         // Treat as success — sync our local cache so we don't retry next tick.
         entry.lastText = text
@@ -539,15 +595,30 @@ export class StatusManager {
     if (!this.telegramApi.sendChatAction) return
     const action = chatActionFor(entry.state)
     if (action === null) return
+    if (this.now() < this.floodUntil) return
     try {
       await this.telegramApi.sendChatAction(entry.handle.chatId, action)
     } catch (err) {
+      if (this.noteFlood(err)) return
       this.log.debug('sendChatAction failed (ignored)', {
         chat_id: entry.handle.chatId,
         action,
         error: err instanceof Error ? err.message : String(err),
       })
     }
+  }
+
+  // On a 429 remember until when Telegram wants silence. Returns true if err
+  // was a flood error (already logged here).
+  private noteFlood(err: unknown): boolean {
+    const seconds = retryAfterSeconds(err)
+    if (seconds === null) return false
+    const until = this.now() + (seconds + 1) * 1000
+    if (until > this.floodUntil) {
+      this.floodUntil = until
+      this.log.warn('status paused: telegram flood limit', { retry_after_s: seconds })
+    }
+    return true
   }
 
   private chatActionTick(chatId: string, messageId: number): void {
