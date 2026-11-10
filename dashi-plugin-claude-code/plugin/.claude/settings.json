@@ -1,0 +1,14 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "B=\"$(command -v bun || echo \"$HOME/.bun/bin/bun\")\"; \"$B\" \"$CLAUDE_PROJECT_DIR/../../scripts/require-telegram-reply.js\""
+          }
+        ]
+      }
+    ]
+  }
+}
