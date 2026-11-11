@@ -34,6 +34,22 @@ die() { echo "ОШИБКА: $*" >&2; exit 1; }
 
 [ "$(id -u)" = "0" ] || die "запусти от root (это сервер, ты уже root)"
 
+# Claude Code ставится без node, а браузеру и его подключению к агентам нужен npx.
+# Ставим node сами, чтобы ученик не застревал на «нет npx».
+NODE_SETUP_URL=${AGENT_BROWSER_NODE_SETUP_URL:-https://deb.nodesource.com/setup_22.x}
+ensure_node() {
+  command -v npx >/dev/null 2>&1 && return 0
+  say "ставлю node (нужен, чтобы скачать браузер и подключить его к агентам)"
+  export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a
+  curl -fsSL "$NODE_SETUP_URL" | bash - >/dev/null 2>&1 ||
+    die "не скачалась установка node — покажи владельцу вывод: curl -fsSL $NODE_SETUP_URL | bash -"
+  apt-get install -y -qq nodejs >/dev/null 2>&1 ||
+    die "не поставился node — покажи владельцу вывод apt-get install -y nodejs"
+  hash -r
+  command -v npx >/dev/null 2>&1 || die "node поставился, но npx не найден — напиши владельцу"
+}
+if [ "${AGENT_BROWSER_NODE_ONLY:-}" = 1 ]; then ensure_node; say "node готов"; exit 0; fi
+
 # Только подключить уже стоящий браузер к агентам (для проверки скрипта).
 if [ "${AGENT_BROWSER_CONNECT_ONLY:-}" != 1 ]; then
 
@@ -59,10 +75,10 @@ if ! command -v cloudflared >/dev/null 2>&1; then
 fi
 
 # ── 2. Сам браузер ───────────────────────────────────────────────────
+ensure_node
 find_chrome() { ls /root/.cache/ms-playwright/chromium-*/chrome-linux64/chrome 2>/dev/null | head -1; }
 CHROME=$(find_chrome)
 if [ -z "$CHROME" ]; then
-  command -v npx >/dev/null 2>&1 || die "нет npx (node) — сначала поставь node, потом запусти меня снова"
   say "скачиваю Chromium (это пара минут)"
   npx -y playwright install --with-deps chromium >/dev/null 2>&1
   CHROME=$(find_chrome)
