@@ -451,7 +451,7 @@ unblock_dialog() {
 HERMES_TZ="${WATCHDOG_HERMES_TZ:-3}"
 HERMES_TZ_LABEL="${WATCHDOG_HERMES_TZ_LABEL:-по Москве}"
 declare -A HLIMIT_NOTIFIED=()
-check_hermes_limit() {
+_hermes_limit_one() {
   local unit="$1" dir="$2" who="$3" back when
   back=$(python3 - "$dir/auth.json" "$HERMES_TZ" <<'PY' 2>/dev/null
 import json, sys, time, datetime as dt
@@ -488,6 +488,26 @@ PY
     notify_owner "$dir/.env" "${who}: лимит ChatGPT вернулся, снова отвечаю. Если последнее сообщение осталось без ответа — отправьте его ещё раз."
     log "hermes $unit: ChatGPT limit over, told owner"
   fi
+}
+
+# New Hermes (v0.23, 11.11.2026) serves every profile from ONE host gateway, so one HERMES entry
+# stands for several agents, each with its own ChatGPT login. The host entry therefore also
+# checks every profile that has no gateway unit of its own (old-style per-profile units are
+# separate entries, or switched off on purpose) and alerts from that profile's own bot.
+check_hermes_limit() {
+  local unit="$1" dir="$2" who="$3" root home p name
+  _hermes_limit_one "$unit" "$dir" "$who"
+  [ "$unit" = hermes-gateway.service ] || return 0
+  root="${dir%/profiles/*}"; home="${root%/.hermes}"
+  # only new Hermes serves profiles from the host gateway; on old Hermes they run their own
+  grep -qs "does not get a gateway of its own" "$home/.hermes/hermes-agent/hermes_cli/gateway.py" ${HERMES_SRC_PROBE:-/usr/local/lib/hermes-agent/hermes_cli/gateway.py} || return 0
+  for p in "$root"/profiles/*/; do
+    p="${p%/}"; name="${p##*/}"
+    [ "$p" = "$dir" ] && continue
+    [ -e "$home/.config/systemd/user/hermes-gateway-$name.service" ] && continue
+    [ -f "$p/auth.json" ] || continue
+    _hermes_limit_one "$unit#$name" "$p" "$name"
+  done
 }
 
 main() {
