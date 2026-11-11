@@ -443,6 +443,53 @@ unblock_dialog() {
   log "closed a blocking dialog for $name"
 }
 
+# check_hermes_limit UNIT DIR WHO — the GPT twin of check_limit (Vika's hard rule: tell the
+# owner once when the plan limit runs out, with the time it comes back; say so again when it
+# is back). Hermes keeps that state in the profile's auth.json: each ChatGPT login of the
+# profile is marked "exhausted" with last_error_reset_at. While one login is still fine the
+# pool just switches to it — no alert. Read from the file only, never by calling the model.
+HERMES_TZ="${WATCHDOG_HERMES_TZ:-3}"
+HERMES_TZ_LABEL="${WATCHDOG_HERMES_TZ_LABEL:-по Москве}"
+declare -A HLIMIT_NOTIFIED=()
+check_hermes_limit() {
+  local unit="$1" dir="$2" who="$3" back when
+  back=$(python3 - "$dir/auth.json" "$HERMES_TZ" <<'PY' 2>/dev/null
+import json, sys, time, datetime as dt
+try:
+    pool = (json.load(open(sys.argv[1])).get("credential_pool") or {}).get("openai-codex") or []
+except Exception:
+    sys.exit(1)
+if not pool:
+    sys.exit(1)
+now, resets = time.time(), []
+for c in pool:
+    if c.get("last_status") != "exhausted":
+        sys.exit(1)
+    r = c.get("last_error_reset_at") or 0
+    if r > 1e12:
+        r /= 1000
+    if r and r <= now:
+        sys.exit(1)  # this login is already back
+    resets.append(r)
+if not all(resets):
+    print("?"); sys.exit(0)
+tz = dt.timezone(dt.timedelta(hours=float(sys.argv[2])))
+print(dt.datetime.fromtimestamp(min(resets), tz).strftime("%H:%M"))
+PY
+)
+  if [ -n "$back" ]; then
+    [ -n "${HLIMIT_NOTIFIED[$unit]:-}" ] && return 0
+    if [ "$back" = "?" ]; then when="когда вернётся, пока не видно"; else when="вернётся примерно в $back $HERMES_TZ_LABEL"; fi
+    notify_owner "$dir/.env" "${who}: кончился лимит ChatGPT, пока не отвечаю — ${when}. Срочное лучше отдать другому агенту." \
+      && HLIMIT_NOTIFIED[$unit]=1
+    log "hermes $unit: ChatGPT limit, back ~$back, notified owner"
+  elif [ -n "${HLIMIT_NOTIFIED[$unit]:-}" ]; then
+    HLIMIT_NOTIFIED[$unit]=""
+    notify_owner "$dir/.env" "${who}: лимит ChatGPT вернулся, снова отвечаю. Если последнее сообщение осталось без ответа — отправьте его ещё раз."
+    log "hermes $unit: ChatGPT limit over, told owner"
+  fi
+}
+
 main() {
   log "watchdog started (pid $$)"
   while true; do
@@ -457,6 +504,7 @@ main() {
     check_login_soon
     for unit in "${!HERMES[@]}"; do
       check_hermes "$unit" "${HERMES[$unit]}" "${HERMES_WHO[$unit]}"
+      check_hermes_limit "$unit" "${HERMES[$unit]}" "${HERMES_WHO[$unit]}"
     done
     sleep "$INTERVAL"
   done
