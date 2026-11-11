@@ -79,7 +79,17 @@ chmod 600 "$STATE_DIR_ABS/.env"
 echo "Запускаю агента... (выйти из чата с агентом — команда /exit)"
 echo "Теперь напиши своему боту в Telegram — он ответит."
 cd "$PLUGIN_DIR"
-exec env IS_SANDBOX=1 claude \
+# Mods from the course skills (~/rubis-agent-skills): limit warning ahead of time and
+# stuck-message unstick. Only the ones that are installed are loaded.
+MODS=""
+for m in "$HOME/rubis-agent-skills/mods/limit-warn" "$HOME/rubis-agent-skills/mods/unstick"; do
+  [ -d "$m" ] && MODS="${MODS:+$MODS:}$m"
+done
+[ -n "$MODS" ] && export CLAUDE_CODE_PLUGIN_DIRS="$MODS"
+# One-shot: a restart for an update keeps the conversation (the update command sets it).
+CONT=()
+if [ -f "$PLUGIN_DIR/state/continue-once" ]; then rm -f "$PLUGIN_DIR/state/continue-once"; CONT=(--continue); fi
+exec env IS_SANDBOX=1 claude "${CONT[@]}" \
   --dangerously-skip-permissions \
   --model claude-opus-5 \
   --dangerously-load-development-channels server:dashi-channel
