@@ -28,6 +28,14 @@ VNCPORT=${AGENT_BROWSER_VNCPORT:-5900}
 WEBPORT=${AGENT_BROWSER_WEBPORT:-6080}
 # Где искать агентов: /root/<папка>/dashi-plugin-claude-code/plugin/.mcp.json
 AGENTS_ROOT=${AGENT_BROWSER_AGENTS_ROOT:-/root}
+# Второй браузер «только для ВКонтакте» через российский сервер (урок «6 соцсетей»,
+# 12.11.2026): весь его интернет идёт через прокси, у агентов он под своим именем,
+# основной браузер «playwright» не трогается.
+PROXY=${AGENT_BROWSER_PROXY:-}
+MCPNAME=${AGENT_BROWSER_MCP_NAME:-playwright}
+AFTER_UNIT=${AGENT_BROWSER_AFTER_UNIT:-}
+PROXY_FLAGS=""
+[ -n "$PROXY" ] && PROXY_FLAGS="--proxy-server=$PROXY --host-resolver-rules=\"MAP * ~NOTFOUND , EXCLUDE 127.0.0.1\""
 
 say() { echo "→ $*"; }
 die() { echo "ОШИБКА: $*" >&2; exit 1; }
@@ -105,6 +113,7 @@ exec "\$CHROME" \\
   --user-data-dir="\$PROFILE" \\
   --remote-debugging-port=$PORT \\
   --remote-debugging-address=127.0.0.1 \\
+  $PROXY_FLAGS \\
   --no-sandbox --no-first-run --no-default-browser-check \\
   --disable-gpu --disable-dev-shm-usage \\
   --window-position=0,0 --window-size=1360,900 \\
@@ -155,7 +164,8 @@ chmod +x "$DIR"/*.sh
 cat >"/etc/systemd/system/$UNIT.service" <<EOF
 [Unit]
 Description=Постоянный браузер агента (профиль с входами, CDP на 127.0.0.1:$PORT)
-After=network.target
+After=network.target $AFTER_UNIT
+Wants=$AFTER_UNIT
 
 [Service]
 Type=simple
@@ -191,11 +201,11 @@ for MCP in "$AGENTS_ROOT"/*/dashi-plugin-claude-code/plugin/.mcp.json; do
   FOUND=1
   PLUGIN=$(dirname "$MCP")
   AGENTDIR=$(dirname "$(dirname "$PLUGIN")")
-  python3 - "$MCP" "$PORT" "$PLUGIN/.claude/settings.local.json" <<'PY' || die "не получилось прописать браузер в $MCP"
+  python3 - "$MCP" "$PORT" "$PLUGIN/.claude/settings.local.json" "$MCPNAME" <<'PY' || die "не получилось прописать браузер в $MCP"
 import json, os, sys
-path, port, settings = sys.argv[1], sys.argv[2], sys.argv[3]
+path, port, settings, name = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 cfg = json.load(open(path))
-cfg.setdefault("mcpServers", {})["playwright"] = {
+cfg.setdefault("mcpServers", {})[name] = {
     "command": "npx",
     "args": ["-y", "@playwright/mcp@latest", "--cdp-endpoint", f"http://127.0.0.1:{port}"],
 }
@@ -205,8 +215,8 @@ json.dump(cfg, open(path, "w"), indent=2, ensure_ascii=False)
 if os.path.exists(settings):
     st = json.load(open(settings))
     off = st.get("disabledMcpjsonServers")
-    if isinstance(off, list) and "playwright" in off:
-        st["disabledMcpjsonServers"] = [x for x in off if x != "playwright"]
+    if isinstance(off, list) and name in off:
+        st["disabledMcpjsonServers"] = [x for x in off if x != name]
         json.dump(st, open(settings, "w"), indent=2, ensure_ascii=False)
 PY
   say "браузер прописан агенту: $AGENTDIR"
