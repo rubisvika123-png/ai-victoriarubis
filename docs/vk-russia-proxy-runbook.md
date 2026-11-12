@@ -100,6 +100,49 @@ curl -s http://127.0.0.1:9226/json/version | head -3
 - Если ВК показал «Проверяем, что вы не робот» — **сам не проходи**. Остановись,
   запусти `share-browser.sh` и попроси владельца нажать самому.
 
+## Вариант Б: российский прокси вместо сервера (если сервера «нет в наличии»)
+
+12.11.2026 дешёвые российские серверы закончились у RUVDS и FirstVDS. Тогда владелец
+покупает не сервер, а **личный российский прокси** (например, Proxy6: страна Россия,
+IPv4, «в одни руки», на 1 месяц) и присылает тебе из кабинета: IP, порт, логин, пароль
+и тип (SOCKS5 или HTTPS). Шаги 1–3 выше тогда **пропускаешь**, вместо них:
+
+Браузер не умеет сам вводить логин и пароль прокси, поэтому ставим маленькую
+программу-посредник gost: она слушает 127.0.0.1:1081 без пароля и отправляет всё
+в прокси владельца с паролем. Для браузера всё выглядит так же, как с сервером.
+
+```
+cd /tmp && curl -fsSLO https://github.com/go-gost/gost/releases/download/v3.3.3/gost_3.3.3_linux_amd64.tar.gz
+tar xzf gost_3.3.3_linux_amd64.tar.gz gost && install -m 755 gost /usr/local/bin/gost && gost -V
+```
+
+Создай `/etc/systemd/system/ru-socks.service` (имя то же, что в шаге 3, чтобы шаг 4 не менять).
+Подставь данные владельца; если тип прокси HTTPS — вместо `socks5://` пиши `http://`:
+
+```
+[Unit]
+Description=Проход в интернет через российский прокси (для ВКонтакте)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/gost -L socks5://127.0.0.1:1081 -F socks5://ЛОГИН:ПАРОЛЬ@IP:ПОРТ
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```
+chmod 600 /etc/systemd/system/ru-socks.service
+systemctl daemon-reload && systemctl enable --now ru-socks
+sleep 3; curl -s --socks5-hostname 127.0.0.1:1081 https://ifconfig.me; echo
+```
+
+Должен напечататься **адрес прокси** (тот IP, что прислал владелец). Дальше — шаги 4–6
+без изменений. VPN «из России» в этом варианте не ставится: у прокси нет своего сервера.
+
 ## VPN «из России» на том же сервере
 
 Ставится на российский сервер как раньше (AmneziaWG или XRay — по приложению
