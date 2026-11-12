@@ -40,6 +40,17 @@ describe('extractFallbackText', () => {
     expect(isServiceMessage({ checklist: { tasks: [] } })).toBe(false)
   })
 
+  test('a shared contact card becomes readable text with name, phone and Telegram ID', () => {
+    const msg = { message_id: 107, from: { id: 1 }, chat: { id: 1 },
+      contact: { phone_number: '+79001112233', first_name: 'Артур', last_name: 'Райхман', user_id: 856320872 } }
+    expect(extractFallbackText(msg)).toBe('Контакт: Артур Райхман, телефон +79001112233, Telegram ID 856320872')
+  })
+
+  test('a contact without Telegram account says so', () => {
+    expect(extractFallbackText({ contact: { phone_number: '+7900', first_name: 'Ольга' } }))
+      .toBe('Контакт: Ольга, телефон +7900, Telegram ID нет (человека нет в Телеграме или он скрыт)')
+  })
+
   test('returns empty string when nothing readable', () => {
     expect(extractFallbackText({ message_id: 1, dice: { value: 3 } })).toBe('')
   })

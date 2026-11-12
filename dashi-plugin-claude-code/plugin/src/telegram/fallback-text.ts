@@ -37,7 +37,25 @@ function renderRich(blocks: RichBlock[], indent = ''): string[] {
   return lines
 }
 
+type Contact = { first_name?: string; last_name?: string; phone_number?: string; user_id?: number; vcard?: string }
+
+// A shared contact card has no text/title/caption at all (12.11.2026: the owner sent a
+// person to the architect twice as a contact and the agent got «could not read»).
+function renderContact(c: Contact): string {
+  const name = [c.first_name, c.last_name].filter(Boolean).join(' ').trim()
+  const parts = [`Контакт: ${name || 'без имени'}`]
+  if (c.phone_number) parts.push(`телефон ${c.phone_number}`)
+  if (typeof c.user_id === 'number') parts.push(`Telegram ID ${c.user_id}`)
+  else parts.push('Telegram ID нет (человека нет в Телеграме или он скрыт)')
+  return parts.join(', ')
+}
+
 export function extractFallbackText(message: unknown): string {
+  const contact = (message as { contact?: Contact } | null)?.contact
+  if (contact && typeof contact === 'object') {
+    const caption = (message as { caption?: string }).caption
+    return [renderContact(contact), typeof caption === 'string' ? caption.trim() : ''].filter(Boolean).join('\n')
+  }
   const rich = (message as { rich_message?: { blocks?: RichBlock[] } } | null)?.rich_message
   if (rich && Array.isArray(rich.blocks)) {
     const text = renderRich(rich.blocks).join('\n').trim()
