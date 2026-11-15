@@ -1,0 +1,17 @@
+[Unit]
+Description=AI agent
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Environment=HOME=/root
+Environment=PATH=/root/.local/bin:/root/.bun/bin:/usr/bin:/bin
+WorkingDirectory=/root/ai-victoriarubis
+ExecStart=/bin/sh -c '/usr/bin/tmux kill-session -t =agent: 2>/dev/null; /usr/bin/tmux new-session -d -s agent ./start.sh; sleep 6; /usr/bin/tmux send-keys -t =agent: Enter; sleep 2; /usr/bin/tmux send-keys -t =agent: Enter; while /usr/bin/tmux has-session -t =agent: 2>/dev/null; do sleep 5; done'
+ExecStop=/usr/bin/tmux kill-session -t =agent:
+Restart=always
+RestartSec=5
+KillMode=mixed
+
+[Install]
+WantedBy=multi-user.target
