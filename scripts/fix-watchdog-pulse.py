@@ -20,10 +20,10 @@ import time
 
 NEW_PULSE = '''pulse() {
   local name="$1" now last pane_pid
-  tmux has-session -t "$name" 2>/dev/null || return 0
+  tmux has-session -t "=$name:" 2>/dev/null || return 0
   now=$(date +%s); last=${LAST_RESTART[$name]:-0}
   (( now - last < GRACE )) && return 0
-  pane_pid=$(tmux list-panes -t "$name" -F '#{pane_pid}' 2>/dev/null | head -1)
+  pane_pid=$(tmux list-panes -t "=$name:" -F '#{pane_pid}' 2>/dev/null | head -1)
   [ -n "$pane_pid" ] || return 0
   # Живой мост бывает двух видов: старый отдельный процесс `bun server.ts` и
   # (Claude 2.1.252+) канал внутри самого процесса claude. Проверка только
@@ -32,7 +32,7 @@ NEW_PULSE = '''pulse() {
      && ! ps -o args= -p "$pane_pid" 2>/dev/null | grep -q "dangerously-load-development-channels"; then
     log "NO PULSE for $name (Telegram bridge dead) — restarting"
     LAST_RESTART[$name]=$now
-    tmux kill-session -t "$name" 2>/dev/null
+    tmux kill-session -t "=$name:" 2>/dev/null
   fi
 }
 '''
