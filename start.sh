@@ -23,6 +23,10 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE="$ROOT/secrets/channel.env"
 PLUGIN_DIR="$ROOT/dashi-plugin-claude-code/plugin"
 
+# 0. Храним историю разговоров 3 месяца, а не 30 дней: если агента когда-нибудь
+#    переносить на GPT, его рецепты собираются из этой истории (Вика 15.11.2026).
+python3 "$ROOT/scripts/keep-history.py" 2>/dev/null || true
+
 # 1. Настройки на месте?
 if [ ! -f "$ENV_FILE" ]; then
   echo "Не нашёл secrets/channel.env."
