@@ -131,15 +131,15 @@ confirm_startup() {
   local name="$1" i scr
   for i in $(seq 1 40); do
     sleep 2
-    tmux has-session -t "$name" 2>/dev/null || return 0
-    scr=$(tmux capture-pane -t "$name" -p 2>/dev/null)
+    tmux has-session -t "=$name:" 2>/dev/null || return 0
+    scr=$(tmux capture-pane -t "=$name:" -p 2>/dev/null)
     if echo "$scr" | grep -q "bypass permissions on"; then
       log "startup complete for $name"; return 0
     elif echo "$scr" | grep -q "Bypass Permissions mode"; then
-      tmux send-keys -t "$name" Down; sleep 0.5; tmux send-keys -t "$name" Enter
+      tmux send-keys -t "=$name:" Down; sleep 0.5; tmux send-keys -t "=$name:" Enter
       log "accepted bypass-permissions dialog for $name"
     elif echo "$scr" | grep -q "for local development"; then
-      tmux send-keys -t "$name" Enter
+      tmux send-keys -t "=$name:" Enter
       log "confirmed dev-channels dialog for $name"
     fi
   done
@@ -147,7 +147,7 @@ confirm_startup() {
 
 ensure() {
   local name="$1" dir="$2" now last
-  tmux has-session -t "$name" 2>/dev/null && return 0
+  tmux has-session -t "=$name:" 2>/dev/null && return 0
 
   now=$(date +%s)
   last=${LAST_RESTART[$name]:-0}
@@ -167,10 +167,10 @@ ensure() {
 
 pulse() {
   local name="$1" now last pane_pid
-  tmux has-session -t "$name" 2>/dev/null || return 0
+  tmux has-session -t "=$name:" 2>/dev/null || return 0
   now=$(date +%s); last=${LAST_RESTART[$name]:-0}
   (( now - last < GRACE )) && return 0
-  pane_pid=$(tmux list-panes -t "$name" -F '#{pane_pid}' 2>/dev/null | head -1)
+  pane_pid=$(tmux list-panes -t "=$name:" -F '#{pane_pid}' 2>/dev/null | head -1)
   [ -n "$pane_pid" ] || return 0
   # До версии 2.1.252 мост в Telegram был отдельным процессом (bun server.ts),
   # начиная с неё он работает внутри самого claude. Признак живой связи —
@@ -179,13 +179,13 @@ pulse() {
      && ! ps -o args= -p "$pane_pid" 2>/dev/null | grep -q "dangerously-load-development-channels"; then
     log "NO PULSE for $name (Telegram bridge dead) — restarting"
     LAST_RESTART[$name]=$now
-    tmux kill-session -t "$name" 2>/dev/null
+    tmux kill-session -t "=$name:" 2>/dev/null
   fi
 }
 
 sweep() {
   local name="$1" dir="$2" live_pid pid pcwd
-  live_pid=$(tmux list-panes -t "$name" -F '#{pane_pid}' 2>/dev/null | head -1)
+  live_pid=$(tmux list-panes -t "=$name:" -F '#{pane_pid}' 2>/dev/null | head -1)
   [ -n "$live_pid" ] || return 0
   for pid in $(pgrep -f 'server:dashi-channel' 2>/dev/null); do
     [ "$pid" = "$live_pid" ] && continue
@@ -265,14 +265,14 @@ check_hermes() {
 # экрана, саму проверку не убирай.
 check_limit() {
   local name="$1" dir="$2" pane reset_time msg menu=""
-  tmux has-session -t "$name" 2>/dev/null || return 0
-  pane=$(tmux capture-pane -t "$name" -p 2>/dev/null)
+  tmux has-session -t "=$name:" 2>/dev/null || return 0
+  pane=$(tmux capture-pane -t "=$name:" -p 2>/dev/null)
 
   if echo "$pane" | grep -qiF 'Stop and wait for limit to reset' \
      && echo "$pane" | grep -qiF 'Upgrade your plan' \
      && echo "$pane" | grep -qiF 'What do you want to do?'; then
     menu=1
-    tmux send-keys -t "$name" Enter 2>/dev/null
+    tmux send-keys -t "=$name:" Enter 2>/dev/null
     log "limit prompt answered for $name (chose: stop and wait for reset)"
   fi
 
@@ -289,7 +289,7 @@ check_limit() {
     log "usage-limit hit for $name (reset: ${reset_time:-unknown}), notified owner"
   elif [ -n "${LIMIT_NOTIFIED[$name]:-}" ] && [ -z "$menu" ]; then
     LIMIT_NOTIFIED[$name]=""
-    tmux send-keys -t "$name" Enter 2>/dev/null
+    tmux send-keys -t "=$name:" Enter 2>/dev/null
     log "usage-limit cleared for $name, nudged"
   fi
 }
@@ -319,8 +319,8 @@ PY
 # держит в памяти старый вход.
 check_login() {
   local name="$1" dir="$2" pane mtime msg
-  tmux has-session -t "$name" 2>/dev/null || return 0
-  pane=$(tmux capture-pane -t "$name" -p 2>/dev/null)
+  tmux has-session -t "=$name:" 2>/dev/null || return 0
+  pane=$(tmux capture-pane -t "=$name:" -p 2>/dev/null)
   mtime=$(stat -c %Y "$CREDS" 2>/dev/null || echo 0)
 
   # Self-display guard, wider than check_limit()'s: agents edit and display this
@@ -370,7 +370,7 @@ check_login() {
       # Still stuck, but the login was refreshed — restart so the new token is
       # read; the process keeps the dead one in memory and ignores Enter.
       LOGIN_NOTIFIED[$name]=""
-      tmux kill-session -t "$name" 2>/dev/null
+      tmux kill-session -t "=$name:" 2>/dev/null
       log "login refreshed for $name, restarting so it picks up the new token"
     fi
   else
@@ -428,7 +428,7 @@ PY
 # а сам ничего не делает: несколько проверок подряд → нажимаем Escape.
 unblock_dialog() {
   local name="$1" screen
-  screen=$(tmux capture-pane -p -t "$name" 2>/dev/null) || return 0
+  screen=$(tmux capture-pane -p -t "=$name:" 2>/dev/null) || return 0
   if grep -qiF 'esc to interrupt' <<<"$screen" \
      || ! grep -qiE 'esc to (cancel|back)' <<<"$screen"; then
     DIALOG_SEEN[$name]=0
@@ -438,7 +438,7 @@ unblock_dialog() {
   # секунды, а зависший висит все проверки подряд.
   DIALOG_SEEN[$name]=$(( ${DIALOG_SEEN[$name]:-0} + 1 ))
   [ "${DIALOG_SEEN[$name]}" -ge "$DOWN_AFTER" ] || return 0
-  tmux send-keys -t "$name" Escape 2>/dev/null
+  tmux send-keys -t "=$name:" Escape 2>/dev/null
   DIALOG_SEEN[$name]=0
   log "closed a blocking dialog for $name"
 }
