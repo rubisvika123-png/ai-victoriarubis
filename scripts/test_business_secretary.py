@@ -154,4 +154,20 @@ old = msg(CLIENT, mid=30); old["business_message"]["date"] = int(time.time()) - 
 s.handle(old)
 assert prompts == [] and s.api.sent() == []
 
+# 18. GPT students (16.11.2026): no Claude on the server — SECRETARY_ENGINE=hermes answers through Hermes
+#     with no tools that touch the server (only «todo»), without the agent's own character, and the
+#     trailing «session_id:» line never reaches the client.
+argv = sec.hermes_argv("/tmp/q.txt")
+assert argv[:2] == ["hermes", "chat"] and "--oneshot" in argv and "--ignore-rules" in argv
+assert argv[argv.index("-t") + 1] == "todo", "a stranger's text must not get terminal or file tools"
+class R:  # fake subprocess result
+    returncode = 0; stdout = "Маникюр стоит 2000 рублей.\n\nsession_id: local-abc\n"; stderr = ""
+seen = {}
+def fake_run(cmd, **kw):
+    seen["query"] = open(cmd[cmd.index("--query-file") + 1]).read(); return R()
+run = sec.hermes_model(tempfile.mkdtemp(), runner=fake_run)
+assert run("СИСТЕМА", "ВОПРОС") == "Маникюр стоит 2000 рублей."
+assert "СИСТЕМА" in seen["query"] and "ВОПРОС" in seen["query"]
+assert sec.pick_model("hermes", "sonnet", "/tmp").__name__ == "run"
+
 print("PASS")
