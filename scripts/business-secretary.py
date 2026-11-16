@@ -15,7 +15,7 @@ Safety model:
 - anything outside the knowledge file is handed to the owner, not invented.
 
 Env: SECRETARY_BOT_TOKEN, SECRETARY_OWNER_ID, SECRETARY_KNOWLEDGE (path),
-     SECRETARY_STATE_DIR, SECRETARY_MODEL (default sonnet),
+     SECRETARY_STATE_DIR, SECRETARY_MODEL (default sonnet), SECRETARY_ENGINE (claude | hermes),
      SECRETARY_ONLY_CHATS (comma-separated chat ids; empty = every chat Telegram gives us).
 """
 import json, os, subprocess, sys, tempfile, time, urllib.parse, urllib.request
@@ -58,6 +58,31 @@ def claude_model(model, workdir):
             raise RuntimeError(f"claude exit {r.returncode}: {r.stderr.strip()[:300]}")
         return out
     return run
+
+
+def hermes_argv(query_file):
+    # 16.11.2026: GPT students have no Claude on the server. Same isolation idea as claude_argv:
+    # no character/rules files (--ignore-rules), and only the harmless «todo» toolset — never the
+    # terminal or files, because a stranger's text goes into this prompt. «-t ""» would mean ALL tools.
+    return ["hermes", "chat", "--query-file", query_file, "--oneshot", "-Q", "--ignore-rules",
+            "-t", "todo", "--max-turns", "2", "--reasoning", "low"]
+
+
+def hermes_model(workdir, runner=subprocess.run):
+    def run(system, prompt):
+        f = os.path.join(workdir, "query.txt")
+        with open(f, "w", encoding="utf-8") as h:
+            h.write(system + "\n\n" + prompt)
+        r = runner(hermes_argv(f), capture_output=True, text=True, timeout=180, cwd=workdir)
+        out = "\n".join(l for l in (r.stdout or "").splitlines() if not l.startswith("session_id:")).strip()
+        if r.returncode != 0 or not out:
+            raise RuntimeError(f"hermes exit {r.returncode}: {(r.stderr or '').strip()[:300]}")
+        return out
+    return run
+
+
+def pick_model(engine, model, workdir):
+    return hermes_model(workdir) if engine == "hermes" else claude_model(model, workdir)
 
 
 def _force_ipv4():
@@ -194,7 +219,7 @@ def main():
     workdir = tempfile.mkdtemp(prefix="secretary-")  # empty: no CLAUDE.md, nothing to read
     api = telegram_api(token)
     s = Secretary(os.environ["SECRETARY_OWNER_ID"], state, os.environ["SECRETARY_KNOWLEDGE"], api,
-                  claude_model(os.environ.get("SECRETARY_MODEL", "sonnet"), workdir),
+                  pick_model(os.environ.get("SECRETARY_ENGINE", "claude"), os.environ.get("SECRETARY_MODEL", "sonnet"), workdir),
                   only_chats=[c for c in os.environ.get("SECRETARY_ONLY_CHATS", "").split(",") if c.strip()])
     offset = int(s._load("offset.json", 0))
     while True:
