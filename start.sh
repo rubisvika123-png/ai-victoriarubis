@@ -93,7 +93,14 @@ done
 # One-shot: a restart for an update keeps the conversation (the update command sets it).
 CONT=()
 if [ -f "$PLUGIN_DIR/state/continue-once" ]; then rm -f "$PLUGIN_DIR/state/continue-once"; CONT=(--continue); fi
+# Model (Vika 23.11.2026): every agent on Opus 5.5, the personal assistant
+# (folder name contains "assistant") on Sonnet 5.5. AGENT_MODEL overrides.
+case "$(basename "$PWD")" in
+  *assistant*) MODEL_DEFAULT=claude-sonnet-5-5 ;;
+  *) MODEL_DEFAULT=claude-opus-5-5 ;;
+esac
+MODEL="${AGENT_MODEL:-$MODEL_DEFAULT}"
 exec env IS_SANDBOX=1 claude "${CONT[@]}" \
   --dangerously-skip-permissions \
-  --model claude-opus-5 \
+  --model "$MODEL" \
   --dangerously-load-development-channels server:dashi-channel
