@@ -130,6 +130,15 @@ class T(unittest.TestCase):
             open(os.path.join(tmp, "x.env"), "w").write("TELEGRAM_BOT_TOKEN=t\nGROQ_API_KEY=gsk_test\n")
             self.assertEqual(b.groq_key(), "gsk_test")
 
+    def test_room_forwarder_turns_typed_line_into_task(self):
+        """25.11: cron scripts type tasks into the old Claude room — after the move they must reach the Grok agent."""
+        import room_forwarder, json
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertTrue(room_forwarder.forward("x", "ЗАДАЧА ОТ ПЛАНИРОВЩИКА: диск\n", root=tmp))
+            self.assertFalse(room_forwarder.forward("x", "   \n", root=tmp))
+            items = [json.loads(l) for l in open(os.path.join(tmp, "state-x", "inbox.jsonl"))]
+            self.assertEqual(items, [{"kind": "schedule", "id": "комната", "text": "ЗАДАЧА ОТ ПЛАНИРОВЩИКА: диск"}])
+
     def test_reminder_list_in_owner_zone(self):
         """25.11 student test: a Moscow student's reminders were listed «(Таиланд)»."""
         import remind, datetime as dt, io, contextlib

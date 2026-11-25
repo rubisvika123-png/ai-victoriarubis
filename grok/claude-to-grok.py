@@ -113,7 +113,7 @@ def setup():
             sys.exit("ОШИБКА: Cursor CLI не поставился:\n" + r.stdout[-800:] + r.stderr[-800:])
     os.makedirs(BRIDGE, exist_ok=True)
     os.makedirs(TEAM, exist_ok=True)
-    for f in ("grok_bridge.py", "remind.py", "tasks.py", "test_grok_bridge.py", "google_mail.py"):
+    for f in ("grok_bridge.py", "remind.py", "tasks.py", "test_grok_bridge.py", "google_mail.py", "room_forwarder.py"):
         shutil.copy2(os.path.join(KIT, "bridge", f), os.path.join(BRIDGE, f))
     for f in ("grok-sync.py", "claude-to-gpt.py", "claude-to-grok.py"):
         shutil.copy2(os.path.join(KIT, f), os.path.join(BRIDGE, f))
@@ -258,12 +258,15 @@ def apply(p):
         f.write(f"TELEGRAM_BOT_TOKEN={p['token']}\nALLOWED_CHAT={p['allowed'][0]}\nAGENT_DIR={copy}\nBACKEND=cursor\n"
                 f"MODEL=grok-4.7-high\nGROQ_API_KEY={p['groq']}\nSTATE_DIR={state}\nOWNER_FORMS=владелец|владельца|владельцу\n")
     os.chmod(env, 0o600)
-    # Claude wake-ups → bridge schedules (server time zone, as the old crontab ran); future reminders → remind.py
+    # Claude wake-ups stay in the crontab: after `switch` the agent's tmux room becomes a forwarder into the
+    # bridge queue (25.11) — copying them into bridge schedules too would deliver every task TWICE.
+    # Only agents without a room (nothing would type into it) get bridge schedules.
     tasks = os.path.join(BRIDGE, "tasks.py")
-    have = sh([sys.executable, tasks, "schedule", "list", "--agent", name]).stdout
-    for sched, text in p["schedules"]:
-        if text[:60] not in have:
-            sh([sys.executable, tasks, "schedule", "add", "--agent", name, "--cron", sched, "--tz", m.server_tz(), "--text", text])
+    if not m.agent_rooms(p["agent_dir"]):
+        have = sh([sys.executable, tasks, "schedule", "list", "--agent", name]).stdout
+        for sched, text in p["schedules"]:
+            if text[:60] not in have:
+                sh([sys.executable, tasks, "schedule", "add", "--agent", name, "--cron", sched, "--tz", m.server_tz(), "--text", text])
     moved = 0
     now = dt.datetime.now(dt.timezone.utc)
     for path in glob.glob(os.path.join(p["agent_dir"], "**/reminders.tsv"), recursive=True):
@@ -348,9 +351,16 @@ def switch(name):
     units = claude_units(agent_dir)
     for u in units:
         sh(["systemctl", "disable", "--now", u])
-    for room in c2g().agent_rooms(agent_dir):
+    rooms = sorted(c2g().agent_rooms(agent_dir))
+    for room in rooms:
         sh(["tmux", "kill-session", "-t", room])  # one bot token can't be polled by two engines
     r = sh(["systemctl", "enable", "--now", f"{SVC}@{name}"])
+    # cron scripts that typed tasks into the Claude room keep working: the room becomes a forwarder (25.11)
+    for room in rooms:
+        sh(["tmux", "new-session", "-d", "-s", room,
+            f"GROK_BRIDGE_DIR={BRIDGE} python3 {os.path.join(BRIDGE, 'room_forwarder.py')} {name}"])
+    if rooms:
+        print(f"Комнаты {', '.join(rooms)} теперь переходники: задачи, которые туда печатают по расписанию, идут агенту на Grok.")
     print(f"Сторож: {', '.join(wd) or 'не нашёл'}; остановил Claude: {', '.join(units) or 'служб не нашёл'}.")
     print("Мост на Grok запущен." if r.returncode == 0 else "ОШИБКА запуска моста:\n" + r.stderr)
     print(f"Проверка: claude-to-grok.py check {name}, потом владелец пишет боту «проверка».")
@@ -360,6 +370,8 @@ def back(name):
     cfg = load_cfg()
     agent_dir = cfg["agents"][name]["live"]
     sh(["systemctl", "disable", "--now", f"{SVC}@{name}"])
+    for room in c2g().agent_rooms(agent_dir):  # drop the forwarder rooms so Claude can take its rooms back
+        sh(["tmux", "kill-session", "-t", room])
     wd = watchdog_toggle(agent_dir, off=False)
     units = claude_units(agent_dir)
     for u in units:
