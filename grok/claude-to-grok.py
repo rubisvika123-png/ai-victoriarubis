@@ -540,6 +540,21 @@ def share_mcp_logins(home=None):
     return shared
 
 
+def seen_group(name):
+    """The group the agent's bot was added to most recently (the bridge notes every group it sees, 26.11)."""
+    path = os.path.join(BRIDGE, f"state-{name}", "seen-groups.json")
+    try:
+        seen = json.load(open(path, encoding="utf-8"))
+    except (OSError, ValueError):
+        seen = {}
+    if not seen:
+        sys.exit("ОШИБКА: бот ещё не видел ни одной группы. Добавь бота в группу, напиши там любое сообщение "
+                 f"и повтори команду. Или укажи номер группы: python3 {CMD} group {name} -100…")
+    gid, info = max(seen.items(), key=lambda kv: kv[1].get("at", 0))
+    print(f"Группа: «{info.get('title') or 'без названия'}» ({gid})")
+    return gid
+
+
 def set_group(name, chat_id):
     """Lesson «ИИ-куратор» on Grok (26.11): the curator's bridge also answers in the course group.
     Writes GROUP_CHATS and the bot's @username (for owner @mentions) into the bridge env and restarts it."""
@@ -602,9 +617,9 @@ def main(argv=None):
     if a.cmd == "mcp-share":
         return share_mcp_logins()
     if a.cmd == "group":
-        if len(a.args) != 2:
-            sys.exit("нужно: group ИМЯ_АГЕНТА ID_ГРУППЫ, например group kurator -1001234567890")
-        return set_group(*a.args)
+        if len(a.args) not in (1, 2):
+            sys.exit("нужно: group ИМЯ_АГЕНТА [ID_ГРУППЫ] — без номера возьму группу, куда бота добавили последней")
+        return set_group(a.args[0], a.args[1] if len(a.args) == 2 else seen_group(a.args[0]))
     if a.cmd == "tz":
         if len(a.args) != 1:
             sys.exit("нужно: tz ЗОНА, например tz Asia/Bangkok")

@@ -378,5 +378,19 @@ class TablesTest(unittest.TestCase):
         self.assertIn("Конец", out)
 
 
+class NoteGroupTest(unittest.TestCase):
+    def test_unknown_group_is_remembered_not_answered(self):
+        """26.11 урок «ИИ-куратор»: группа, куда добавили бота, запоминается для `grok.py group <агент>`."""
+        import tempfile, json as _j
+        with tempfile.TemporaryDirectory() as d:
+            b = gb.Bridge.__new__(gb.Bridge)
+            b.state_dir, b.chat, b.groups = d, "42", set()
+            b._write = lambda path, value: open(path, "w").write(value)
+            b.enqueue = lambda *a, **k: self.fail("must not answer in an unknown group")
+            b.handle({"chat": {"id": -100777, "type": "supergroup", "title": "Курс"}, "from": {"id": 5}, "text": "Проверка куратора"})
+            seen = _j.load(open(os.path.join(d, "seen-groups.json")))
+            self.assertEqual(seen["-100777"]["title"], "Курс")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -647,10 +647,25 @@ class Bridge:
         self.enqueue({"kind": "group", "text": head + "\n" + prompt,
                       "chat": str(msg["chat"]["id"]), "reply_to": msg.get("message_id")})
 
+    def note_group(self, msg):
+        """A group the bot was added to but is not switched on for (lesson «ИИ-куратор», 26.11): remember its id so
+        `grok.py group <agent>` can switch it on without the owner hunting for the number. Nothing is answered there."""
+        chat = msg.get("chat") or {}
+        if chat.get("type") not in ("group", "supergroup"):
+            return
+        path = os.path.join(self.state_dir, "seen-groups.json")
+        try:
+            seen = json.load(open(path, encoding="utf-8"))
+        except (OSError, ValueError):
+            seen = {}
+        seen[str(chat["id"])] = {"title": chat.get("title", ""), "at": int(time.time())}
+        self._write(path, json.dumps(seen, ensure_ascii=False))
+
     def handle(self, msg):
         if str(msg.get("chat", {}).get("id")) in getattr(self, "groups", ()):
             return self.handle_group(msg)
         if str(msg.get("chat", {}).get("id")) != self.chat:
+            self.note_group(msg)
             return  # allowlist: only the owner
         if (msg.get("text") or "").strip() == "/new":
             self._write(self.session_file, "")
