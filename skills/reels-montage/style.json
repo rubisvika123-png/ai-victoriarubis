@@ -1,0 +1,13 @@
+{
+  "_как_заполнить": "Один раз, вместе с владельцем. Цвета — в формате #RRGGBB. Пока не заполнено — работают цвета автора курса.",
+  "font": "Montserrat Black",
+  "main_colour": "#F3E7CE",
+  "key_colour": "#E91E8C",
+  "code_outline": "#B01B3B",
+  "sub_colour": "#FFFFFF",
+  "sub_next_colour": "#A0A0A0",
+  "sub_size": 62,
+  "speed": 1.15,
+  "code_word": "",
+  "code_triggers": ["слово", "комментах", "комментариях", "пиши", "напиши"]
+}
