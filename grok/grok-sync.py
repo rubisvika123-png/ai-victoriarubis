@@ -126,13 +126,19 @@ def replace_claude_reminders(text):
     return "\n".join(out)
 
 
-def skills_index(copy):
+# Skills installed for the whole server: `npx skills add … -g --agent cursor` puts them in ~/.agents/skills (kie.ai,
+# lesson «Генерация картинок и видео», 26.11) — outside every agent folder, so the index must look there too.
+SHARED_SKILLS = [os.path.expanduser("~/.agents/skills")]
+
+
+def skills_index(copy, shared=None):
     rows, seen = [], set()
     found = []  # os.walk, not glob: glob's ** skips hidden folders, and skills live in .claude/skills
-    for root, dirs, files in os.walk(copy):
-        dirs[:] = [d for d in dirs if d not in ("node_modules", ".git", "everything-claude-code")]
-        if "SKILL.md" in files:
-            found.append(os.path.join(root, "SKILL.md"))
+    for top in [copy, *(SHARED_SKILLS if shared is None else shared)]:
+        for root, dirs, files in os.walk(top):
+            dirs[:] = [d for d in dirs if d not in ("node_modules", ".git", "everything-claude-code")]
+            if "SKILL.md" in files:
+                found.append(os.path.join(root, "SKILL.md"))
     for f in sorted(found):
         # generic dev packs (887 skills) drown our own know-how; deleted/backup copies are stale
         if any(x in f for x in ("/node_modules/", "/backup", "everything-claude-code", "deleted-")):
@@ -145,7 +151,8 @@ def skills_index(copy):
         key = (name.group(1).strip() if name else f)
         if desc and key not in seen:
             seen.add(key)
-            rows.append(f"- `{os.path.relpath(f, copy)}` — {(name.group(1) if name else '').strip()}: {desc.group(1).strip()[:220]}")
+            shown = os.path.relpath(f, copy) if f.startswith(copy.rstrip("/") + "/") else f
+            rows.append(f"- `{shown}` — {(name.group(1) if name else '').strip()}: {desc.group(1).strip()[:220]}")
     return rows
 
 
