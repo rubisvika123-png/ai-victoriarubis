@@ -314,6 +314,9 @@ class Bridge:
     def __init__(self, env):
         self.token = env["TELEGRAM_BOT_TOKEN"]
         self.chat = str(env["ALLOWED_CHAT"])
+        # Curator mode (26.11): also answer in these course groups — students freely, the owner only on @mention
+        self.groups = {g.strip() for g in env.get("GROUP_CHATS", "").split(",") if g.strip()}
+        self.bot_username = env.get("BOT_USERNAME", "")
         self.dir = env["AGENT_DIR"]
         self.model = env.get("MODEL", "grok-4.7-medium")
         self.backend = env.get("BACKEND", "cursor")
@@ -510,27 +513,30 @@ class Bridge:
             except Exception:
                 pass
 
-    def typing_loop(self, stop):
+    def typing_loop(self, stop, chat=None):
         while not stop.is_set():
             try:
-                tg(self.token, "sendChatAction", chat_id=self.chat, action="typing")
+                tg(self.token, "sendChatAction", chat_id=chat or self.chat, action="typing")
             except Exception:
                 pass
             stop.wait(5)
 
-    def send(self, text):
+    def send(self, text, chat=None, reply_to=None):
         text = tables_to_text(text)
+        chat = chat or self.chat
         for part in chunks(text):
+            extra = {"reply_to_message_id": reply_to, "allow_sending_without_reply": "true"} if reply_to else {}
+            reply_to = None  # only the first part answers the student's message
             try:  # agents write Markdown; Telegram shows it raw («непонятные символы», Vika 24.11)
-                tg(self.token, "sendMessage", chat_id=self.chat, text=md_to_html(part), parse_mode="HTML")
+                tg(self.token, "sendMessage", chat_id=chat, text=md_to_html(part), parse_mode="HTML", **extra)
             except Exception:
-                tg(self.token, "sendMessage", chat_id=self.chat, text=part)
+                tg(self.token, "sendMessage", chat_id=chat, text=part, **extra)
             time.sleep(1)  # flood control: one message per second
         for path in files_in(text, self.dir):
             # the agent can only print a path; the bridge delivers the file (montage reels, images)
             method, field = ("sendVideo", "video") if path.lower().endswith((".mp4", ".mov")) else ("sendDocument", "document")
             subprocess.run(["curl", "-s", "-m", "300", f"https://api.telegram.org/bot{self.token}/{method}",
-                            "-F", f"chat_id={self.chat}", "-F", f"{field}=@{path}"], capture_output=True)
+                            "-F", f"chat_id={chat}", "-F", f"{field}=@{path}"], capture_output=True)
             time.sleep(1)
 
     def worker(self):
@@ -549,8 +555,9 @@ class Bridge:
             self._write(os.path.join(self.state_dir, "origin.txt"), item["kind"])  # tasks.py anti ping-pong
             self.current = item if item["kind"] != "vika" else item["text"]
             stop = threading.Event()
-            threading.Thread(target=self.typing_loop, args=(stop,), daemon=True).start()
-            status_id = self.status_bubble()
+            group = item["kind"] == "group"
+            threading.Thread(target=self.typing_loop, args=(stop, item.get("chat")), daemon=True).start()
+            status_id = None if group else self.status_bubble()  # no «Печатает…» bubbles in the course chat
             started = time.time()
             try:
                 answer, is_error = self.ask(prompt)
@@ -578,16 +585,20 @@ class Bridge:
                 answer = f"Задача от агента «{tasks.NAMES.get(item['from'], item['from'])}»:\n\n" + answer
                 tasks.append(os.path.join(tasks.sdir(item["from"]), "inbox.jsonl"),
                              {"kind": "report", "from": self.agent, "text": answer[:3000]})
-            self.deliver(answer)
+            if group and is_silence(answer):
+                self.current = None
+                self._save_pending()
+                continue
+            self.deliver(answer, item.get("chat"), item.get("reply_to"))
             self.current = None  # only now: the answer is in Telegram (Grok review 24.11)
             self._save_pending()
 
-    def deliver(self, answer):
+    def deliver(self, answer, chat=None, reply_to=None):
         """Send with retries; a failed send must not silently eat a finished answer."""
         for wait in (0, 5, 15, 30, 60, 120):
             time.sleep(wait)
             try:
-                self.send(answer)
+                self.send(answer, chat, reply_to) if chat else self.send(answer)
                 return True
             except Exception as e:
                 print(f"send failed (retry after {wait}s):", e, file=sys.stderr, flush=True)
@@ -610,11 +621,35 @@ class Bridge:
                     "\n\nПиши живо и тепло, как близкий помощник: обратись по имени, коротко, по-человечески, "
                     "можно одно уместное эмодзи; если есть что-то полезное к делу (ссылка, сумма, срок из памяти) — добавь одной строкой. "
                     "Без слова «Напоминание:» в начале, без списков и заголовков, если пункт один.")
+        if item["kind"] == "group":
+            return (f"СООБЩЕНИЕ В ЧАТЕ КУРСА (группа, не личка {OWNER_GEN}):\n{item['text']}\n\n"
+                    "Ответ уйдёт в группу ответом на это сообщение — начни его с @ника автора из строки «ник автора для отметки» "
+                    "(нет ника — по имени без @). Если по правилам чата отвечать не нужно — ответь ровно одним словом: МОЛЧУ")
         if item["kind"] == "schedule":
             return f"ЗАДАЧА ПО РАСПИСАНИЮ #{item.get('id')} (её поставил(а) {OWNER_NOM}): {item['text']}"
         return item["text"]
 
+    def handle_group(self, msg):
+        who = msg.get("from") or {}
+        text = msg.get("text") or msg.get("caption") or ""
+        if str(who.get("id")) == self.chat:  # the owner talks to students herself; answer her only on @mention
+            mention = self.bot_username and f"@{self.bot_username}".lower() in text.lower()
+            replied = ((msg.get("reply_to_message") or {}).get("from") or {}).get("username", "") == self.bot_username
+            if not (mention or replied):
+                return
+        prompt = self.to_prompt(msg)
+        if not prompt:
+            return
+        name = " ".join(x for x in (who.get("first_name"), who.get("last_name")) if x) or "без имени"
+        nick = f"@{who['username']}" if who.get("username") else "у автора нет ника"
+        owner = " (это владелец курса)" if str(who.get("id")) == self.chat else ""
+        head = f"[{name}{owner}] [ник автора для отметки: {nick}] [message_id {msg.get('message_id')}]"
+        self.enqueue({"kind": "group", "text": head + "\n" + prompt,
+                      "chat": str(msg["chat"]["id"]), "reply_to": msg.get("message_id")})
+
     def handle(self, msg):
+        if str(msg.get("chat", {}).get("id")) in getattr(self, "groups", ()):
+            return self.handle_group(msg)
         if str(msg.get("chat", {}).get("id")) != self.chat:
             return  # allowlist: only the owner
         if (msg.get("text") or "").strip() == "/new":
@@ -750,12 +785,22 @@ class Bridge:
                             self.enqueue(f"[сообщение {OWNER_GEN} не удалось обработать ({e}). Скажи {OWNER_DAT}, что оно не дошло, и попроси прислать ещё раз]")
 
 
+SILENCE = ("МОЛЧУ", "NO_REPLY", "NOREPLY")
+
+
+def is_silence(answer):
+    """Curator in the group: the agent decides to stay silent (rules of the course chat) — send nothing."""
+    return (answer or "").strip().strip(".!").upper() in SILENCE
+
+
 def load_env(path):
     env = {}
     for line in open(path):
         line = line.strip()
         if line and not line.startswith("#") and "=" in line:
             k, v = line.split("=", 1)
+            if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":  # KEY="a|b" — same as bash/systemd (26.11)
+                v = v[1:-1]
             env[k] = v
     return env
 
