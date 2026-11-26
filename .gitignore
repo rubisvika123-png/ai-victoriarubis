@@ -28,3 +28,4 @@ core/memory/*
 # Только корневой .mcp.json (если появится) — плагину нужен свой,
 # dashi-plugin-claude-code/plugin/.mcp.json, его не трогаем.
 /.mcp.json
+__pycache__/
