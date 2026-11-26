@@ -136,7 +136,17 @@ def setup():
     if CONFIG not in cron:
         subprocess.run(["crontab", "-"], input=cron.rstrip("\n") + "\n" + line + "\n", text=True)
     print(f"Готово: Cursor CLI {AGENT_BIN}, мост {BRIDGE}, папка команды {TEAM}, обновление раз в час.")
-    print("Дальше: claude-to-grok.py login — вход владельца в Cursor (подписка с Grok).")
+    print(f"Дальше: вход в Cursor — NO_OPEN_BROWSER=1 {AGENT_BIN} login")
+
+
+CMD = os.path.basename(sys.argv[0]) if sys.argv and sys.argv[0].endswith(".py") else "claude-to-grok.py"
+FRESH = False  # `new`: the agent never ran on Claude — no migration words for the student (26.11 прохождение курса)
+
+
+def say(text):
+    """Migration-only line: hidden on a fresh Grok install."""
+    if not FRESH:
+        print(text)
 
 
 def logged_in():
@@ -151,7 +161,7 @@ def login():
         return
     print("Запусти в отдельном окне и отдай ссылку владельцу — он откроет её в браузере, где вошёл в Cursor/Grok, и подтвердит:")
     print(f"  NO_OPEN_BROWSER=1 {AGENT_BIN} login")
-    print("После входа: claude-to-grok.py check-login")
+    print(f"После входа: python3 {CMD} check-login")
 
 
 # --- plan / apply ---------------------------------------------------------------
@@ -175,6 +185,10 @@ def gather(agent_dir, name):
 
 
 def show(p):
+    if FRESH:
+        print(f"Агент «{p['name']}»: бот {'есть' if p['token'] else 'НЕТ'}, отвечает: {', '.join(p['allowed']) or 'НИКОМУ'}, "
+              f"часовой пояс: {p['tz']}")
+        return [] if p["token"] and p["allowed"] else ["нет токена бота или ID владельца"]
     print(f"Агент: {p['agent_dir']} → Grok «{p['name']}» ({p['copy']})")
     print(f"  бот: {'есть' if p['token'] else 'НЕТ'}; отвечает: {', '.join(p['allowed']) or 'НИКОМУ'}; "
           f"голосовые: {'есть' if p['groq'] else 'нет ключа Groq'}; часовой пояс владельца: {p['tz']}")
@@ -217,7 +231,8 @@ def apply(p):
     for sd in p["skills"]:
         if not os.path.realpath(sd).startswith(os.path.realpath(p["agent_dir"]) + os.sep):
             dst = os.path.join(copy, "skills-shared", re.sub(r"[^A-Za-z0-9]+", "-", sd).strip("-"))
-            subprocess.run(["rsync", "-a", "--exclude", "everything-claude-code/", sd + "/", dst + "/"], check=False)
+            subprocess.run(["rsync", "-a", "--exclude", "everything-claude-code/", sd + "/", dst + "/"], check=False,
+                           capture_output=True)  # an unreadable file in a shared skill must not scare the student
     # 19.11 lesson (ученица, GPT move): the moved agent must see its past — one clean dialog file
     dialog = os.path.join(copy, "state", "claude-dialog.md")
     n = m.export_claude_dialog(p["agent_dir"], HOME, dialog)
@@ -288,13 +303,13 @@ def apply(p):
     r = sh([sys.executable, os.path.join(BRIDGE, "grok-sync.py"), "--config", CONFIG])
     if r.returncode:
         sys.exit("ОШИБКА сборки правил:\n" + r.stderr[-1500:])
-    print(r.stdout.strip())
-    print(f"Собран: {copy}. Прежняя переписка: {n or 0} эпизодов. Напоминаний перенесено: {moved}. "
+    say(r.stdout.strip())
+    say(f"Собран: {copy}. Прежняя переписка: {n or 0} эпизодов. Напоминаний перенесено: {moved}. "
           f"Расписаний: {len(p['schedules'])}.")
     if p["mcp"]:
-        print(f"Подключения: {', '.join(p['mcp'])} → {HOME}/.cursor/mcp.json. Для тех, что с входом: {AGENT_BIN} mcp login <имя> "
+        say(f"Подключения: {', '.join(p['mcp'])} → {HOME}/.cursor/mcp.json. Для тех, что с входом: {AGENT_BIN} mcp login <имя> "
               "(ссылку — владельцу, живёт ~5 минут, делать быстро).")
-    print(f"Агент на Claude ещё работает. Переключить на Grok: claude-to-grok.py switch {name}")
+    say(f"Агент на Claude ещё работает. Переключить на Grok: {CMD} switch {name}")
 
 
 # --- switch / back / check ------------------------------------------------------
@@ -345,7 +360,7 @@ def switch(name):
     if name not in cfg["agents"]:
         sys.exit(f"ОШИБКА: агента {name} нет — сначала apply")
     if not logged_in():
-        sys.exit("ОШИБКА: Cursor не вошёл — сначала claude-to-grok.py login")
+        sys.exit(f"ОШИБКА: Cursor не вошёл — сначала NO_OPEN_BROWSER=1 {AGENT_BIN} login")
     agent_dir = cfg["agents"][name]["live"]
     wd = watchdog_toggle(agent_dir, off=True)
     units = claude_units(agent_dir)
@@ -361,9 +376,9 @@ def switch(name):
             f"GROK_BRIDGE_DIR={BRIDGE} python3 {os.path.join(BRIDGE, 'room_forwarder.py')} {name}"])
     if rooms:
         print(f"Комнаты {', '.join(rooms)} теперь переходники: задачи, которые туда печатают по расписанию, идут агенту на Grok.")
-    print(f"Сторож: {', '.join(wd) or 'не нашёл'}; остановил Claude: {', '.join(units) or 'служб не нашёл'}.")
+    say(f"Сторож: {', '.join(wd) or 'не нашёл'}; остановил Claude: {', '.join(units) or 'служб не нашёл'}.")
     print("Мост на Grok запущен." if r.returncode == 0 else "ОШИБКА запуска моста:\n" + r.stderr)
-    print(f"Проверка: claude-to-grok.py check {name}, потом владелец пишет боту «проверка».")
+    say(f"Проверка: {CMD} check {name}, потом владелец пишет боту «проверка».")
 
 
 def back(name):
@@ -407,7 +422,7 @@ def check(name):
     r = sh(f"cd {copy} && timeout 300 {AGENT_BIN} -p --trust --force --model grok-4.7-high --output-format text "
            "'Служебная проверка: ответь одним словом — готов'")
     line("готов" in r.stdout.lower(), f"Grok отвечает в папке агента ({r.stdout.strip()[:60] or r.stderr.strip()[:120]})")
-    print("ПЕРЕНОС ГОТОВ" if ok else "ПЕРЕНОС НЕ ГОТОВ — исправить строки «НЕТ»")
+    say("ПЕРЕНОС ГОТОВ" if ok else "ПЕРЕНОС НЕ ГОТОВ — исправить строки «НЕТ»")
     return ok
 
 
@@ -530,7 +545,7 @@ def set_group(name, chat_id):
     Writes GROUP_CHATS and the bot's @username (for owner @mentions) into the bridge env and restarts it."""
     env = os.path.join(BRIDGE, f"{name}.env")
     if not os.path.isfile(env):
-        sys.exit(f"ОШИБКА: нет агента «{name}» ({env}). Сначала: claude-to-grok.py new {name} ТОКЕН_БОТА ТВОЙ_ID")
+        sys.exit(f"ОШИБКА: нет агента «{name}» ({env}). Сначала: python3 {CMD} new {name} ТОКЕН_БОТА ТВОЙ_ID")
     if not re.fullmatch(r"-100\d{5,}", chat_id):
         sys.exit("ОШИБКА: id группы начинается с -100 (например -1001234567890). Его покажет бот @getidsbot в группе.")
     allines = open(env, encoding="utf-8").readlines()
@@ -609,8 +624,10 @@ def main(argv=None):
                 or not re.fullmatch(r"\d{6,12}:[A-Za-z0-9_-]{30,}", a.args[1]):
             sys.exit("нужно: new NAME BOT_TOKEN OWNER_ID [ИМЯ_АГЕНТА] (имя латиницей, токен от BotFather, ID — цифры)")
         if not logged_in():
-            sys.exit("ОШИБКА: Cursor не вошёл — сначала claude-to-grok.py setup и login")
+            sys.exit(f"ОШИБКА: Cursor не вошёл — сначала python3 {CMD} setup и NO_OPEN_BROWSER=1 {AGENT_BIN} login")
         name = a.args[0]
+        global FRESH
+        FRESH = True
         agent_dir = new_agent(name, a.args[1], a.args[2], a.args[3] if len(a.args) == 4 else None)
         p = gather(agent_dir, name)
         problems = show(p)
@@ -631,7 +648,7 @@ def main(argv=None):
         if a.cmd == "apply":
             apply(p)
         else:
-            print("Пробный прогон: ничего не записано. Запись: claude-to-grok.py apply …")
+            print(f"Пробный прогон: ничего не записано. Запись: {CMD} apply …")
         return
     if len(a.args) != 1:
         sys.exit("нужно: NAME")
