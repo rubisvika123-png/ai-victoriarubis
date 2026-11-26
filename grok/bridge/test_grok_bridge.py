@@ -18,8 +18,18 @@ class Fake(gb.Bridge):
                           "STATE_DIR": os.path.join(tmp, "state")})
         self.sent = []
 
-    def send(self, text):
+    def send(self, text, chat=None, reply_to=None):
         self.sent.append(text)
+        self.sent_to = getattr(self, "sent_to", []) + [(chat, reply_to)]
+
+
+class FakeGroup(Fake):
+    """Curator mode (lesson «ИИ-куратор» on Grok, 26.11): the bot also answers in the course group."""
+    def __init__(self, tmp):
+        gb.Bridge.__init__(self, {"TELEGRAM_BOT_TOKEN": "x", "ALLOWED_CHAT": "42", "AGENT_DIR": tmp,
+                                  "STATE_DIR": os.path.join(tmp, "state"), "GROUP_CHATS": "-100500",
+                                  "BOT_USERNAME": "kurator_bot"})
+        self.sent = []
 
 
 class T(unittest.TestCase):
@@ -49,6 +59,43 @@ class T(unittest.TestCase):
             b.handle({"chat": {"id": 7}, "text": "привет"})
             self.assertEqual(b.queue, [])
             self.assertEqual(b.sent, [])
+
+    def test_group_student_message_becomes_tagged_task(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            b = FakeGroup(tmp)
+            b.handle({"chat": {"id": -100500, "type": "supergroup"}, "message_id": 77,
+                      "from": {"id": 9, "first_name": "Анна", "username": "anna_k"}, "text": "агент молчит, что делать?"})
+            self.assertEqual(len(b.queue), 1)
+            item = b.queue[0]
+            self.assertEqual((item["kind"], item["chat"], item["reply_to"]), ("group", "-100500", 77))
+            self.assertIn("[ник автора для отметки: @anna_k]", item["text"])
+            self.assertIn("агент молчит", item["text"])
+            self.assertEqual(b.sent, [])  # no «отвечу после» noise in the group
+
+    def test_group_owner_only_on_mention(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            b = FakeGroup(tmp)
+            b.handle({"chat": {"id": -100500}, "message_id": 1, "from": {"id": 42, "first_name": "Вика"}, "text": "всем привет"})
+            self.assertEqual(b.queue, [])
+            b.handle({"chat": {"id": -100500}, "message_id": 2, "from": {"id": 42, "first_name": "Вика"},
+                      "text": "@kurator_bot ответь Анне"})
+            self.assertEqual(len(b.queue), 1)
+
+    def test_group_without_nick_and_foreign_group_ignored(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            b = FakeGroup(tmp)
+            b.handle({"chat": {"id": -100999}, "message_id": 3, "from": {"id": 5}, "text": "чужая группа"})
+            self.assertEqual(b.queue, [])
+            b.handle({"chat": {"id": -100500}, "message_id": 4, "from": {"id": 5, "first_name": "Олег"}, "text": "вопрос"})
+            self.assertIn("у автора нет ника", b.queue[0]["text"])
+
+    def test_group_silence_is_not_delivered(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            b = FakeGroup(tmp)
+            self.assertTrue(gb.is_silence("МОЛЧУ"))
+            self.assertTrue(gb.is_silence("  NO_REPLY "))
+            self.assertFalse(gb.is_silence("@anna_k Анна, откройте окно агента"))
+            self.assertIn("МОЛЧУ", b.render({"kind": "group", "text": "x", "chat": "-100500", "reply_to": 1}))
 
     def test_new_clears_session(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -129,6 +176,16 @@ class T(unittest.TestCase):
             self.assertEqual(b.groq_key(), "")
             open(os.path.join(tmp, "x.env"), "w").write("TELEGRAM_BOT_TOKEN=t\nGROQ_API_KEY=gsk_test\n")
             self.assertEqual(b.groq_key(), "gsk_test")
+
+    def test_env_file_quotes_are_stripped(self):
+        """26.11: OWNER_FORMS is written quoted so `set -a; . file` works in bash; the bridge must not keep the quotes."""
+        with tempfile.NamedTemporaryFile("w", suffix=".env", delete=False) as f:
+            f.write('OWNER_FORMS="владелец|владельца|владельцу"\nMODEL=grok-4.7-high\nX=\'a\'\n')
+        env = gb.load_env(f.name)
+        os.unlink(f.name)
+        self.assertEqual(env["OWNER_FORMS"], "владелец|владельца|владельцу")
+        self.assertEqual(env["MODEL"], "grok-4.7-high")
+        self.assertEqual(env["X"], "a")
 
     def test_room_forwarder_turns_typed_line_into_task(self):
         """25.11: cron scripts type tasks into the old Claude room — after the move they must reach the Grok agent."""

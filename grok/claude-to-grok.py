@@ -256,7 +256,7 @@ def apply(p):
         p["groq"] = c2g().read_env(env).get("GROQ_API_KEY", "")
     with open(env, "w") as f:
         f.write(f"TELEGRAM_BOT_TOKEN={p['token']}\nALLOWED_CHAT={p['allowed'][0]}\nAGENT_DIR={copy}\nBACKEND=cursor\n"
-                f"MODEL=grok-4.7-high\nGROQ_API_KEY={p['groq']}\nSTATE_DIR={state}\nOWNER_FORMS=владелец|владельца|владельцу\n")
+                f"MODEL=grok-4.7-high\nGROQ_API_KEY={p['groq']}\nSTATE_DIR={state}\nOWNER_FORMS=\"владелец|владельца|владельцу\"\n")
     os.chmod(env, 0o600)
     # Claude wake-ups stay in the crontab: after `switch` the agent's tmux room becomes a forwarder into the
     # bridge queue (25.11) — copying them into bridge schedules too would deliver every task TWICE.
@@ -486,6 +486,33 @@ def connect_google(address, app_password, ics_url, tz):
     return mail.returncode == 0
 
 
+def set_group(name, chat_id):
+    """Lesson «ИИ-куратор» on Grok (26.11): the curator's bridge also answers in the course group.
+    Writes GROUP_CHATS and the bot's @username (for owner @mentions) into the bridge env and restarts it."""
+    env = os.path.join(BRIDGE, f"{name}.env")
+    if not os.path.isfile(env):
+        sys.exit(f"ОШИБКА: нет агента «{name}» ({env}). Сначала: claude-to-grok.py new {name} ТОКЕН_БОТА ТВОЙ_ID")
+    if not re.fullmatch(r"-100\d{5,}", chat_id):
+        sys.exit("ОШИБКА: id группы начинается с -100 (например -1001234567890). Его покажет бот @getidsbot в группе.")
+    allines = open(env, encoding="utf-8").readlines()
+    vals = dict(l.rstrip("\n").split("=", 1) for l in allines if "=" in l)
+    lines = [l for l in allines if not l.startswith(("GROUP_CHATS=", "BOT_USERNAME="))]
+    token = vals.get("TELEGRAM_BOT_TOKEN", "").strip('"')
+    try:
+        me = json.load(urllib.request.urlopen(f"https://api.telegram.org/bot{token}/getMe", timeout=20))["result"]
+    except Exception as e:
+        sys.exit(f"ОШИБКА: не смог спросить у Telegram имя бота ({e}). Проверь токен.")
+    if me.get("can_read_all_group_messages") is False:
+        print("ВНИМАНИЕ: у бота включён режим приватности — в группе он видит только команды и упоминания. "
+              "В @BotFather: /mybots → бот → Bot Settings → Group Privacy → Turn off, потом удали бота из группы и добавь снова.")
+    groups = sorted({g for g in vals.get("GROUP_CHATS", "").split(",") if g} | {chat_id})
+    with open(env, "w", encoding="utf-8") as f:
+        f.writelines(lines + [f"GROUP_CHATS={','.join(groups)}\n", f"BOT_USERNAME={me['username']}\n"])
+    os.chmod(env, 0o600)
+    sh(["systemctl", "restart", f"{SVC}@{name}"])
+    print(f"Куратор «{name}» (@{me['username']}) теперь отвечает и в группе {chat_id}: ученикам — сам, владельцу — по @упоминанию.")
+
+
 def set_owner_tz(zone):
     """25.11 test: an agent created later assumed Moscow while the owner lived in Thailand. One team-wide zone:
     stored in the team config, used by every next `apply`/`new`, and the existing agents are rebuilt."""
@@ -509,7 +536,7 @@ def set_owner_tz(zone):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("cmd", choices=["setup", "login", "check-login", "plan", "apply", "switch", "back", "check", "new", "github", "google", "tz"])
+    ap.add_argument("cmd", choices=["setup", "login", "check-login", "plan", "apply", "switch", "back", "check", "new", "github", "google", "tz", "group"])
     ap.add_argument("args", nargs="*")
     a = ap.parse_args(argv)
     if a.cmd == "setup":
@@ -518,6 +545,10 @@ def main(argv=None):
         return login()
     if a.cmd == "check-login":
         return print("Cursor: вход выполнен" if logged_in() else "Cursor: НЕ вошёл")
+    if a.cmd == "group":
+        if len(a.args) != 2:
+            sys.exit("нужно: group ИМЯ_АГЕНТА ID_ГРУППЫ, например group kurator -1001234567890")
+        return set_group(*a.args)
     if a.cmd == "tz":
         if len(a.args) != 1:
             sys.exit("нужно: tz ЗОНА, например tz Asia/Bangkok")

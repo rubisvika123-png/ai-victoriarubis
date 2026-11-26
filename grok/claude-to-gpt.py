@@ -504,7 +504,11 @@ def find_mcp(agent_dir, home):
     """MCP connections the Claude agent had (15.11): project .mcp.json, then ~/.claude.json user and
     project scopes. Converted to Hermes mcp_servers (stdio: command/args/env; http: url/headers)."""
     sources = []
-    for path in (os.path.join(agent_dir, ".mcp.json"), os.path.join(home, ".claude.json")):
+    # 26.11: the course browser (setup-browser.sh, lesson 9) and similar course scripts write their server
+    # into the dashi plugin's own .mcp.json — without it the agent lost its browser after the move
+    for path in (os.path.join(agent_dir, ".mcp.json"),
+                 os.path.join(agent_dir, "dashi-plugin-claude-code/plugin/.mcp.json"),
+                 os.path.join(home, ".claude.json")):
         try:
             data = json.load(open(path, encoding="utf-8"))
         except (OSError, ValueError):
