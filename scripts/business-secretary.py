@@ -15,7 +15,8 @@ Safety model:
 - anything outside the knowledge file is handed to the owner, not invented.
 
 Env: SECRETARY_BOT_TOKEN, SECRETARY_OWNER_ID, SECRETARY_KNOWLEDGE (path),
-     SECRETARY_STATE_DIR, SECRETARY_MODEL (default sonnet), SECRETARY_ENGINE (claude | hermes),
+     SECRETARY_STATE_DIR, SECRETARY_MODEL (default sonnet), SECRETARY_ENGINE (claude | hermes | cursor),
+     SECRETARY_USER (cursor engine: the unprivileged Linux user the model runs as, default «secretary»),
      SECRETARY_ONLY_CHATS (comma-separated chat ids; empty = every chat Telegram gives us).
 """
 import json, os, subprocess, sys, tempfile, time, urllib.parse, urllib.request
@@ -81,7 +82,33 @@ def hermes_model(workdir, runner=subprocess.run):
     return run
 
 
+def cursor_argv(user, workdir, model, text):
+    # 26.11.2026 Grok students (Cursor CLI «agent»): there is no switch that removes tools, and in the
+    # live test «--mode ask» still ran `ls /root`. Isolation is therefore by Linux user: the model runs
+    # as an unprivileged account (own Cursor login, empty home) that cannot read /root — not the bot
+    # token, not the owner's files. Never --force: it would auto-run every command a stranger asks for.
+    home = f"/home/{user}"
+    return ["runuser", "-u", user, "--", "env", f"HOME={home}", f"PATH={home}/.local/bin:/usr/local/bin:/usr/bin:/bin",
+            "agent", "-p", "--mode", "ask", "--trust", "--workspace", workdir,
+            "--model", model, "--output-format", "text", text]
+
+
+def cursor_model(user, model, runner=subprocess.run):
+    workdir = f"/home/{user}/work"
+    def run(system, prompt):
+        r = runner(cursor_argv(user, workdir, model, system + "\n\n" + prompt),
+                   capture_output=True, text=True, timeout=180)
+        out = (r.stdout or "").strip()
+        if r.returncode != 0 or not out:
+            raise RuntimeError(f"cursor exit {r.returncode}: {(r.stderr or '').strip()[:300]}")
+        return out
+    return run
+
+
 def pick_model(engine, model, workdir):
+    if engine == "cursor":
+        return cursor_model(os.environ.get("SECRETARY_USER", "secretary"),
+                            model if model.startswith("grok") else "grok-4.7-medium")
     return hermes_model(workdir) if engine == "hermes" else claude_model(model, workdir)
 
 

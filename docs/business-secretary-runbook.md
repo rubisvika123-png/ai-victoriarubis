@@ -1,6 +1,6 @@
 # ИИ-секретарь в личном Телеграме владельца (Telegram для бизнеса)
 
-Эта инструкция — **для агента-техспеца (Claude Code или Hermes/GPT)**, а не для владельца.
+Эта инструкция — **для агента-техспеца (Claude Code, Hermes/GPT или Grok/Cursor)**, а не для владельца.
 Владелец даёт команду «поставь мне ИИ-секретаря по docs/business-secretary-runbook.md»,
 ты выполняешь шаги сверху вниз и после каждого коротко, простыми словами, говоришь
 владельцу, что сделано.
@@ -26,6 +26,36 @@ Claude на сервере нет — секретарь отвечает чер
   `HOME=/root` тоже обязателен: без него Hermes не найдёт вход в ChatGPT.
 - Секретарь отвечает без инструментов сервера: скрипт запускает Hermes только с набором `todo`
   и без твоего характера. Не меняй это.
+
+## Если ты агент на Grok (Cursor), а не на Claude Code
+
+Claude на сервере нет — секретарь отвечает через Cursor (Grok) (26.11.2026). У Cursor нет режима
+«совсем без инструментов», поэтому секретарь думает от **отдельного пользователя сервера** без доступа
+к папке /root (токены, файлы владельца). Отличия от шагов ниже, всё остальное — так же:
+
+- Скрипт возьми из этой заготовки: `git clone https://github.com/rubisvika123-png/ai-victoriarubis /root/ai-victoriarubis`
+  (если папки ещё нет). «Твоя папка» ниже — `/root/ai-victoriarubis`.
+- Номер владельца — `ALLOWED_CHAT` из файла своего моста (`/root/grok-bridge/<твоё имя>.env`).
+- Отдельный пользователь `secretary` с его собственной копией Cursor и входом (вход копируется с этого же
+  сервера, владельцу ничего подтверждать не нужно):
+
+```bash
+id secretary >/dev/null 2>&1 || useradd -m -s /usr/sbin/nologin secretary
+chmod 700 /root
+H=/home/secretary
+mkdir -p $H/.config/cursor $H/.local/bin $H/.local/share $H/work
+cp /root/.config/cursor/auth.json $H/.config/cursor/
+cp -a /root/.local/share/cursor-agent $H/.local/share/
+ln -sfn "$(readlink -f /root/.local/bin/agent | sed "s#^/root/#$H/#")" $H/.local/bin/agent
+chown -R secretary:secretary $H
+```
+
+- В `secretary.env` вместо `SECRETARY_MODEL=sonnet` напиши `SECRETARY_ENGINE=cursor` и `SECRETARY_USER=secretary`.
+  Лимит у секретаря общий с остальными агентами — подписка Grok.
+- Служба (шаг 3) запускается от `root` как написано: скрипт сам вызывает модель от пользователя `secretary`.
+  Файл `secretary.env` с токеном бота — только в /root, пользователю `secretary` он недоступен. Не меняй это.
+- Проверка изоляции (после шага 3): `runuser -u secretary -- cat /root/business-secretary/secretary.env` должна
+  ответить «Permission denied». Если файл прочитался — СТОП, напиши владельцу.
 
 ## Чего НЕ делать (важно)
 
