@@ -170,4 +170,22 @@ assert run("СИСТЕМА", "ВОПРОС") == "Маникюр стоит 2000 
 assert "СИСТЕМА" in seen["query"] and "ВОПРОС" in seen["query"]
 assert sec.pick_model("hermes", "sonnet", "/tmp").__name__ == "run"
 
+# 26.11.2026 Grok students (Cursor CLI): no tool-less switch exists, and «--mode ask» still ran `ls /root`
+# in the live test. So the model runs as a separate unprivileged user that cannot read /root (bot token,
+# owner's files): the worst a stranger gets is that empty user's home.
+argv = sec.cursor_argv("secretary", "/home/secretary/work", "grok-4.7-medium", "ТЕКСТ")
+assert argv[:3] == ["runuser", "-u", "secretary"], "never as root"
+assert "--force" not in argv and "--yolo" not in argv
+assert argv[argv.index("--mode") + 1] == "ask" and argv[argv.index("--workspace") + 1] == "/home/secretary/work"
+assert argv[-1] == "ТЕКСТ" and "HOME=/home/secretary" in argv
+seen2 = {}
+class R2:
+    returncode = 0; stdout = "Маникюр стоит 2000 рублей.\n"; stderr = ""
+def fake_run2(cmd, **kw):
+    seen2["cmd"] = cmd; return R2()
+run = sec.cursor_model("secretary", "grok-4.7-medium", runner=fake_run2)
+assert run("СИСТЕМА", "ВОПРОС") == "Маникюр стоит 2000 рублей."
+assert "СИСТЕМА" in seen2["cmd"][-1] and "ВОПРОС" in seen2["cmd"][-1]
+assert sec.pick_model("cursor", "sonnet", "/tmp").__name__ == "run"
+
 print("PASS")
