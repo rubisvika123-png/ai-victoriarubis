@@ -149,6 +149,20 @@ def say(text):
         print(text)
 
 
+def parse_when(when):
+    """Time from the course reminder queue. Students' remind-add.sh writes «2026-12-17 09:00 +0500» (space before the
+    zone, no colon) — Python 3.10 fromisoformat rejects it and the reminder was silently left behind (26.11, Татьяна)."""
+    m = re.fullmatch(r"\s*(\d{4}-\d\d-\d\d)[ T](\d\d:\d\d(?::\d\d)?)\s*(?:([+-]\d\d):?(\d\d)|Z)?\s*", when)
+    if not m:
+        return None
+    zone = f"{m.group(3)}:{m.group(4)}" if m.group(3) else ("+00:00" if when.strip().endswith("Z") else "")
+    try:
+        t = dt.datetime.fromisoformat(f"{m.group(1)}T{m.group(2)}{zone}")
+    except ValueError:
+        return None
+    return t
+
+
 def logged_in():
     out = sh(f"{AGENT_BIN} status")
     text = (out.stdout + out.stderr).lower()
@@ -289,9 +303,8 @@ def apply(p):
             if "\t" not in line:
                 continue
             when, text = line.rstrip("\n").split("\t", 1)
-            try:
-                t = dt.datetime.fromisoformat(when.strip())
-            except ValueError:
+            t = parse_when(when)
+            if t is None:
                 continue
             t = (t if t.tzinfo else t.replace(tzinfo=dt.timezone.utc)).astimezone(dt.timezone.utc)
             if t > now:
@@ -374,7 +387,9 @@ def switch(name):
     for room in rooms:
         sh(["tmux", "new-session", "-d", "-s", room,
             f"GROK_BRIDGE_DIR={BRIDGE} python3 {os.path.join(BRIDGE, 'room_forwarder.py')} {name}"])
-    if rooms:
+    if rooms:  # remembered: the hourly sync puts a room back if a stopping Claude unit takes tmux down (26.11)
+        cfg["agents"][name]["rooms"] = rooms
+        save_cfg(cfg)
         print(f"Комнаты {', '.join(rooms)} теперь переходники: задачи, которые туда печатают по расписанию, идут агенту на Grok.")
     say(f"Сторож: {', '.join(wd) or 'не нашёл'}; остановил Claude: {', '.join(units) or 'служб не нашёл'}.")
     print("Мост на Grok запущен." if r.returncode == 0 else "ОШИБКА запуска моста:\n" + r.stderr)
