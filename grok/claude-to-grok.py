@@ -486,6 +486,45 @@ def connect_google(address, app_password, ics_url, tz):
     return mail.returncode == 0
 
 
+def share_mcp_logins(home=None):
+    """26.11 test: Cursor keeps an MCP login (Chatplace) per agent FOLDER (~/.cursor/projects/<folder>/mcp-auth.json).
+    The owner logs in once (usually via the techspec) — copy that login to every other team agent, so the
+    marketer who builds the funnel (lesson «Автоворонка») sees Chatplace too. Never overwrites a login an agent has."""
+    home = home or HOME
+    cfg = load_cfg()
+    proj = os.path.join(home, ".cursor", "projects")
+    key = lambda d: os.path.abspath(d).strip("/").replace("/", "-")  # noqa: E731  Cursor's folder naming
+    dirs = [os.path.join(cfg["team"], n) for n in cfg["agents"]]
+    have = {}
+    for d in dirs:
+        try:
+            for srv, val in json.load(open(os.path.join(proj, key(d), "mcp-auth.json"))).items():
+                if isinstance(val, dict) and val.get("tokens"):
+                    have.setdefault(srv, val)
+        except (OSError, ValueError):
+            pass
+    shared = []
+    for d in dirs:
+        path = os.path.join(proj, key(d), "mcp-auth.json")
+        try:
+            data = json.load(open(path))
+        except (OSError, ValueError):
+            data = {}
+        changed = False
+        for srv, val in have.items():
+            if not (isinstance(data.get(srv), dict) and data[srv].get("tokens")):
+                data[srv] = val
+                changed = True
+                shared.append(f"{srv} → {os.path.basename(d)}")
+        if changed:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w") as f:
+                json.dump(data, f)
+            os.chmod(path, 0o600)
+    print("Вход в подключения роздан: " + (", ".join(shared) if shared else "все агенты уже подключены"))
+    return shared
+
+
 def set_group(name, chat_id):
     """Lesson «ИИ-куратор» on Grok (26.11): the curator's bridge also answers in the course group.
     Writes GROUP_CHATS and the bot's @username (for owner @mentions) into the bridge env and restarts it."""
@@ -536,7 +575,7 @@ def set_owner_tz(zone):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("cmd", choices=["setup", "login", "check-login", "plan", "apply", "switch", "back", "check", "new", "github", "google", "tz", "group"])
+    ap.add_argument("cmd", choices=["setup", "login", "check-login", "plan", "apply", "switch", "back", "check", "new", "github", "google", "tz", "group", "mcp-share"])
     ap.add_argument("args", nargs="*")
     a = ap.parse_args(argv)
     if a.cmd == "setup":
@@ -545,6 +584,8 @@ def main(argv=None):
         return login()
     if a.cmd == "check-login":
         return print("Cursor: вход выполнен" if logged_in() else "Cursor: НЕ вошёл")
+    if a.cmd == "mcp-share":
+        return share_mcp_logins()
     if a.cmd == "group":
         if len(a.args) != 2:
             sys.exit("нужно: group ИМЯ_АГЕНТА ID_ГРУППЫ, например group kurator -1001234567890")
