@@ -26,7 +26,7 @@ import tasks  # noqa: E402  handoffs + schedules (Vika 24.11)
 
 AGENT_BIN = os.path.expanduser("~/.local/bin/agent")
 TG_LIMIT = 4000
-TIMEOUT = 1800
+TIMEOUT = int(os.environ.get("TURN_TIMEOUT", "1800"))  # montage agents can set 3600 in their env (26.11)
 ALBUM_WAIT = 3  # seconds to wait for the rest of an album
 RULES_IDLE = 30 * 60  # quiet minutes before a fresh session picks up new rules
 KILL_GRACE = 30  # seconds past the deadline before a silent agent process is killed
@@ -106,6 +106,19 @@ def friendly_error(raw):
         return ("Лимит подписки Grok сейчас исчерпан — агент не может ответить, пока он не обновится. "
                 "Сообщение я сохранил: напишите ещё раз чуть позже. Подробность для техспеца: " + (raw or "")[-300:])
     return "Ошибка агента: " + (raw or "")[-1500:]
+
+
+def hide_paths(text, files):
+    """The owner sees the file itself, not where it lies on the server (26.11 Татьяна English: «все агенты вставляют пути
+    к файлам», asking them to stop did not stick — the path was how the bridge knew what to send)."""
+    import re
+    for p in sorted(files, key=len, reverse=True):
+        names = {p, p.replace(os.path.expanduser("~"), "~", 1)}
+        for n in names:
+            text = re.sub(r"[`«\"']?" + re.escape(n) + r"[`»\"']?", "", text)
+    lines = [re.sub(r"[ \t]{2,}", " ", l).rstrip() for l in text.split("\n")]
+    lines = [l for l in lines if l.strip(" -•:—→") or not l.strip()]
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
 
 
 def files_in(text, base):
@@ -524,6 +537,10 @@ class Bridge:
     def send(self, text, chat=None, reply_to=None):
         text = tables_to_text(text)
         chat = chat or self.chat
+        files = files_in(text, self.dir)
+        if files:
+            # also catch relative mentions (materials/out/x.mp4) by their basename
+            text = hide_paths(text, files + [os.path.relpath(f, self.dir) for f in files]) or "Готово, файл ниже."
         for part in chunks(text):
             extra = {"reply_to_message_id": reply_to, "allow_sending_without_reply": "true"} if reply_to else {}
             reply_to = None  # only the first part answers the student's message
@@ -532,7 +549,7 @@ class Bridge:
             except Exception:
                 tg(self.token, "sendMessage", chat_id=chat, text=part, **extra)
             time.sleep(1)  # flood control: one message per second
-        for path in files_in(text, self.dir):
+        for path in files:
             # the agent can only print a path; the bridge delivers the file (montage reels, images)
             method, field = ("sendVideo", "video") if path.lower().endswith((".mp4", ".mov")) else ("sendDocument", "document")
             subprocess.run(["curl", "-s", "-m", "300", f"https://api.telegram.org/bot{self.token}/{method}",
@@ -564,7 +581,7 @@ class Bridge:
                 if is_error:
                     answer = self.plain_reminder(item) if item["kind"] == "remind" else friendly_error(answer)
             except subprocess.TimeoutExpired:
-                answer = "Агент думал дольше 30 минут и был остановлен. Напишите ещё раз короче или /new."
+                answer = f"Агент думал дольше {TIMEOUT // 60} минут и был остановлен. Напишите ещё раз короче или /new."
             except Exception as e:  # never let one bad turn kill the bridge
                 answer = f"Сбой моста: {e}"
             finally:
@@ -821,4 +838,7 @@ def load_env(path):
 
 
 if __name__ == "__main__":
-    Bridge(load_env(sys.argv[1])).run()
+    _env = load_env(sys.argv[1])
+    if _env.get("TURN_TIMEOUT", "").isdigit():  # per-agent limit in its env file, e.g. 3600 for a montage agent
+        TIMEOUT = int(_env["TURN_TIMEOUT"])
+    Bridge(_env).run()

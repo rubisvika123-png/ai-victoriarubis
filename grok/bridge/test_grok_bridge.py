@@ -392,5 +392,17 @@ class NoteGroupTest(unittest.TestCase):
             self.assertEqual(seen["-100777"]["title"], "Курс")
 
 
+class HidePathsTest(unittest.TestCase):
+    def test_sent_file_path_is_not_shown(self):
+        """26.11 Татьяна English: the reel arrives, the server path does not."""
+        f = "/root/grok-team/editor/materials/out/ceh-v2.mp4"
+        text = f"Готово, ролик собран:\n{f}\n\nОбложка как в прошлых роликах."
+        out = gb.hide_paths(text, [f, "materials/out/ceh-v2.mp4"])
+        self.assertNotIn("/root/", out)
+        self.assertIn("Готово, ролик собран", out)
+        self.assertIn("Обложка как в прошлых роликах.", out)
+        self.assertEqual(gb.hide_paths(f"`{f}`", [f]), "")
+
+
 if __name__ == "__main__":
     unittest.main()
