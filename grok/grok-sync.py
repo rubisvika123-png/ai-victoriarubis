@@ -284,10 +284,28 @@ def main(argv=None):
         out = build(agent, a.dry_run, cfg)
         print(f"{agent}: {len(out)} chars")
     if not a.dry_run and not a.agent:
+        ensure_rooms(cfg)
         for src, dst in cfg.get("shared", []):
             if os.path.isdir(src):
                 sync_shared(src, dst)
                 subprocess.run(["chown", "-R", f"{cfg['user']}:{cfg['user']}", dst], check=False)
+
+
+def ensure_rooms(cfg, run=subprocess.run):
+    """Forwarder rooms (scripts that typed tasks into a Claude tmux room now reach the Grok agent). Stopping a Claude
+    unit can take the whole tmux server down with it — 26.11 Татьяна lost 3 of 5 rooms right after the move and her
+    morning calendar would have gone silent. The hourly sync puts back any room that is missing."""
+    bridge = os.path.dirname(os.path.abspath(__file__))
+    back = []
+    for name, info in cfg.get("agents", {}).items():
+        for room in info.get("rooms", []):
+            if run(["tmux", "has-session", "-t", room], capture_output=True).returncode != 0:
+                run(["tmux", "new-session", "-d", "-s", room,
+                     f"GROK_BRIDGE_DIR={bridge} python3 {os.path.join(bridge, 'room_forwarder.py')} {name}"])
+                back.append(room)
+    if back:
+        print("вернул комнаты-переходники:", ", ".join(back))
+    return back
 
 
 def merge_text(live, copy):
