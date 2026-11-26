@@ -404,5 +404,26 @@ class HidePathsTest(unittest.TestCase):
         self.assertEqual(gb.hide_paths(f"`{f}`", [f]), "")
 
 
+class FitVideoTest(unittest.TestCase):
+    def test_too_big_reel_is_shrunk_not_dropped(self):
+        """26.11 Татьяна English: a 77 MB reel never reached Telegram (bot limit 50 MB)."""
+        import shutil, subprocess as sp
+        if not shutil.which("ffmpeg"):
+            self.skipTest("no ffmpeg")
+        with tempfile.TemporaryDirectory() as d:
+            src = os.path.join(d, "reel.mp4")
+            sp.run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "testsrc=size=1080x1920:rate=30", "-f", "lavfi",
+                    "-i", "sine", "-t", "6", "-c:v", "libx264", "-b:v", "20M", "-c:a", "aac", src], check=True)
+            old = gb.TG_FILE_MAX
+            try:
+                gb.TG_FILE_MAX = os.path.getsize(src) // 2      # pretend the limit is half the file
+                out = gb.fit_video(src, limit=gb.TG_FILE_MAX - 1000)
+                self.assertTrue(out and os.path.getsize(out) <= gb.TG_FILE_MAX, out)
+                self.assertTrue(os.path.isfile(src))             # the original stays
+                self.assertIn(src, gb.files_in("готово: " + src, d))   # big reels are no longer skipped
+            finally:
+                gb.TG_FILE_MAX = old
+
+
 if __name__ == "__main__":
     unittest.main()

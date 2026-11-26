@@ -121,13 +121,32 @@ def hide_paths(text, files):
     return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
 
 
+def fit_video(path, limit=TG_FILE_MAX - 3 * 1024 * 1024):
+    """A finished reel over Telegram's 50 MB bot limit used to vanish: the bridge skipped it and only the path stayed in
+    the chat (26.11 Татьяна English, 77 MB). Re-encode a copy to fit; the original stays on the server untouched."""
+    if os.path.getsize(path) <= TG_FILE_MAX:
+        return path
+    try:
+        dur = float(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", path],
+                                   capture_output=True, text=True, timeout=60).stdout.strip())
+    except (ValueError, OSError, subprocess.SubprocessError):
+        return None
+    kbps = max(300, int(limit * 8 / 1000 / max(dur, 1)) - 160)  # video bitrate, leaving room for 128k audio
+    out = os.path.join(os.path.dirname(path), os.path.splitext(os.path.basename(path))[0] + "-tg.mp4")
+    r = subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", path, "-c:v", "libx264", "-preset", "veryfast",
+                        "-b:v", f"{kbps}k", "-maxrate", f"{kbps}k", "-bufsize", f"{kbps * 2}k",
+                        "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", out], capture_output=True, timeout=1800)
+    return out if r.returncode == 0 and os.path.isfile(out) and os.path.getsize(out) <= TG_FILE_MAX else None
+
+
 def files_in(text, base):
     """Existing deliverable files the answer mentions (absolute or relative to the agent dir)."""
     import re
     out = []
     for m in re.findall(r"[\w./~-]+\.(?:mp4|mov|jpe?g|png|pdf|docx|xlsx)\b", text, re.I):
         p = os.path.expanduser(m if m.startswith(("/", "~")) else os.path.join(base, m))
-        if os.path.isfile(p) and p not in out and os.path.getsize(p) <= TG_FILE_MAX:
+        big_video = p.lower().endswith((".mp4", ".mov")) and os.path.isfile(p)  # too big → fit_video() shrinks a copy
+        if os.path.isfile(p) and p not in out and (os.path.getsize(p) <= TG_FILE_MAX or big_video):
             out.append(p)
     return out[:5]
 
@@ -550,6 +569,14 @@ class Bridge:
                 tg(self.token, "sendMessage", chat_id=chat, text=part, **extra)
             time.sleep(1)  # flood control: one message per second
         for path in files:
+            if os.path.getsize(path) > TG_FILE_MAX:
+                small = fit_video(path)
+                if not small:
+                    tg(self.token, "sendMessage", chat_id=chat,
+                       text=f"Ролик получился {os.path.getsize(path) // 1048576} МБ — Телеграм не принимает от бота файлы больше 50 МБ, "
+                            "а ужать его не вышло. Попросите агента сделать его легче (короче или в меньшем качестве).")
+                    continue
+                path = small
             # the agent can only print a path; the bridge delivers the file (montage reels, images)
             method, field = ("sendVideo", "video") if path.lower().endswith((".mp4", ".mov")) else ("sendDocument", "document")
             subprocess.run(["curl", "-s", "-m", "300", f"https://api.telegram.org/bot{self.token}/{method}",
