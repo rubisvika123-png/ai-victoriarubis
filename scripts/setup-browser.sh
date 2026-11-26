@@ -230,6 +230,32 @@ done
 
 [ "$FOUND" = 1 ] || die "не нашёл ни одного агента в $AGENTS_ROOT/*/dashi-plugin-claude-code — покажи владельцу ls $AGENTS_ROOT"
 
+# Агенты на Grok (Cursor, 26.11.2026): Cursor берёт подключения не из папки
+# агента, а из одного общего файла ~/.cursor/mcp.json — прописываем браузер и туда.
+CURSOR_MCP=${AGENT_BROWSER_CURSOR_MCP:-$HOME/.cursor/mcp.json}
+if [ -d "$(dirname "$CURSOR_MCP")" ]; then
+  python3 - "$CURSOR_MCP" "$PORT" "$MCPNAME" <<'PY' || die "не получилось прописать браузер в $CURSOR_MCP"
+import json, os, sys
+path, port, name = sys.argv[1], sys.argv[2], sys.argv[3]
+cfg = json.load(open(path)) if os.path.isfile(path) else {}
+cfg.setdefault("mcpServers", {})[name] = {
+    "command": "npx",
+    "args": ["-y", "@playwright/mcp@latest", "--cdp-endpoint", f"http://127.0.0.1:{port}"],
+}
+json.dump(cfg, open(path, "w"), indent=2, ensure_ascii=False)
+os.chmod(path, 0o600)
+PY
+  AGENT_BIN=${AGENT_BROWSER_CURSOR_BIN:-$HOME/.local/bin/agent}
+  [ -x "$AGENT_BIN" ] && "$AGENT_BIN" mcp enable "$MCPNAME" >/dev/null 2>&1
+  say "браузер прописан агентам на Grok (Cursor): $CURSOR_MCP"
+  # AGENT_BROWSER_GROK_UNITS — список мостов вручную (тесты передают «none», чтобы не трогать живые службы)
+  GROK_UNITS=${AGENT_BROWSER_GROK_UNITS:-$(systemctl list-units --plain --no-legend 'grok-bridge@*' 2>/dev/null | awk '{print $1}')}
+  [ "$GROK_UNITS" = none ] && GROK_UNITS=""
+  for U in $GROK_UNITS; do
+    UNITS+=("${U%.service}")
+  done
+fi
+
 echo
 echo "ГОТОВО. Браузер работает и поднимается сам после перезагрузки."
 echo
