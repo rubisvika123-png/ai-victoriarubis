@@ -35,6 +35,7 @@ import importlib.util
 import json
 import os
 import re
+import time
 import shutil
 import subprocess
 import sys
@@ -516,6 +517,56 @@ def connect_google(address, app_password, ics_url, tz):
     return mail.returncode == 0
 
 
+MCP_URLS = {"chatplace": "https://mcp.chatplace.io/mcp"}
+
+
+def mcp_link(name, server="chatplace", wait=20):
+    """Lesson «Подключаем сервисы» on Grok, step 1 of 2 (26.11: Вика's first callback address did not take — the agent
+    had put the login together by hand). One login window per server, started IN the agent's folder (Cursor keeps MCP
+    logins per folder); an old window is closed first so only ONE link is ever live. Prints the link for the owner."""
+    folder = os.path.join(TEAM, name)
+    if not os.path.isdir(folder):
+        sys.exit(f"ОШИБКА: нет агента «{name}» ({folder})")
+    path = os.path.join(HOME, ".cursor/mcp.json")
+    data = json.load(open(path)) if os.path.isfile(path) else {}
+    if server not in data.setdefault("mcpServers", {}):
+        data["mcpServers"][server] = {"url": MCP_URLS[server]}
+        with open(path, "w") as f:
+            json.dump(data, f, ensure_ascii=False, indent=1)
+        os.chmod(path, 0o600)
+    sh([AGENT_BIN, "mcp", "enable", server])
+    room = f"mcp-login-{server}"
+    sh(["tmux", "kill-session", "-t", room])
+    sh(["tmux", "new-session", "-d", "-s", room, "-c", folder, f"{AGENT_BIN} mcp login {server}; sleep 900"])
+    for _ in range(wait):
+        time.sleep(1)
+        screen = sh(["tmux", "capture-pane", "-pt", room, "-J"]).stdout.replace("\n", "")
+        m = re.search(r"https://\S+/authorize\?\S+", screen)
+        if m:
+            print(m.group(0))
+            return True
+    sys.exit("ОШИБКА: ссылка входа не появилась за 20 секунд — повторите команду.")
+
+
+def mcp_finish(callback, server="chatplace"):
+    """Step 2 of 2: the owner's browser address (http://localhost:8787/callback?code=…) goes to the waiting login window
+    on this server; then check «ready», close the window and give the login to every agent of the team."""
+    if not re.match(r"http://localhost:\d+/callback\?\S*code=", callback.strip()):
+        sys.exit("ОШИБКА: нужен адрес из строки браузера целиком — он начинается с http://localhost и содержит code=")
+    room = f"mcp-login-{server}"
+    if sh(["tmux", "has-session", "-t", room]).returncode != 0:
+        sys.exit("ОШИБКА: окно входа уже закрыто (ссылка живёт ~10 минут). Выдайте владельцу новую ссылку: mcp-link.")
+    r = sh(["curl", "-s", "-m", "20", callback.strip()])
+    for _ in range(15):
+        time.sleep(1)
+        if "ready" in sh([AGENT_BIN, "mcp", "list"], cwd=os.path.join(TEAM, "techspec")).stdout:
+            break
+    sh(["tmux", "kill-session", "-t", room])
+    given = share_mcp_logins()
+    print(f"{server} подключён ✅" + (f" Вход роздан: {', '.join(given)}" if given else ""))
+    return True
+
+
 def share_mcp_logins(home=None):
     """26.11 test: Cursor keeps an MCP login (Chatplace) per agent FOLDER (~/.cursor/projects/<folder>/mcp-auth.json).
     The owner logs in once (usually via the techspec) — copy that login to every other team agent, so the
@@ -620,7 +671,7 @@ def set_owner_tz(zone):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("cmd", choices=["setup", "login", "check-login", "plan", "apply", "switch", "back", "check", "new", "github", "google", "tz", "group", "mcp-share"])
+    ap.add_argument("cmd", choices=["setup", "login", "check-login", "plan", "apply", "switch", "back", "check", "new", "github", "google", "tz", "group", "mcp-share", "mcp-link", "mcp-finish"])
     ap.add_argument("args", nargs="*")
     a = ap.parse_args(argv)
     if a.cmd == "setup":
@@ -629,6 +680,12 @@ def main(argv=None):
         return login()
     if a.cmd == "check-login":
         return print("Cursor: вход выполнен" if logged_in() else "Cursor: НЕ вошёл")
+    if a.cmd == "mcp-link":
+        return mcp_link(a.args[0] if a.args else "techspec")
+    if a.cmd == "mcp-finish":
+        if not a.args:
+            sys.exit("нужно: mcp-finish 'http://localhost:8787/callback?code=…'")
+        return mcp_finish(a.args[0])
     if a.cmd == "mcp-share":
         return share_mcp_logins()
     if a.cmd == "group":
