@@ -121,7 +121,7 @@ def setup():
     shutil.copytree(os.path.join(KIT, "templates"), os.path.join(BRIDGE, "templates"), dirs_exist_ok=True)
     shutil.copy2(os.path.join(KIT, "templates/student/GROK-COMMON.md"), os.path.join(TEAM, "GROK-COMMON.md"))
     t = sh([sys.executable, os.path.join(BRIDGE, "test_grok_bridge.py")], cwd=BRIDGE)
-    if not t.stderr.rstrip().endswith("OK"):
+    if not re.search(r"\nOK( \(skipped=\d+\))?$", t.stderr.rstrip()):  # 27.11: a skipped test (no ffmpeg) is fine
         sys.exit("ОШИБКА: проверки моста не прошли:\n" + t.stderr[-1500:])
     with open(os.path.join(UNIT_DIR, f"{SVC}@.service"), "w") as f:
         f.write(UNIT.format(bridge=BRIDGE, home=HOME, user=RUN_AS))
