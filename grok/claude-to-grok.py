@@ -655,6 +655,8 @@ def set_owner_tz(zone):
         ZoneInfo(zone)
     except Exception:
         sys.exit(f"ОШИБКА: не знаю часовой пояс «{zone}». Примеры: Europe/Moscow, Asia/Bangkok, Asia/Almaty")
+    global FRESH
+    FRESH = True  # 27.11 lesson recording: the rebuild printed «Агент на Claude ещё работает…» to a from-scratch student
     cfg = load_cfg()
     cfg["owner_tz"] = zone
     save_cfg(cfg)
