@@ -434,6 +434,9 @@ def check(name):
     for must, what in (("## Как я работаю", "общий порядок работы"), ("## Я на Grok", "правила моста"),
                        ("tasks.py handoff", "передача задач"), ("tasks.py schedule add", "расписания"),
                        ("remind.py add", "напоминания"), ("## Оглавление моей памяти", "оглавление памяти")):
+        if what == "оглавление памяти" and not glob.glob(os.path.join(copy, "agent-memory", "*.md")):
+            line(True, "в правилах: оглавление памяти (памяти у агента нет — оглавление не нужно)")
+            continue  # 27.11: an agent with no notes legitimately has no index
         line(must in rules, f"в правилах: {what}")
     r = sh(f"cd {copy} && timeout 300 {AGENT_BIN} -p --trust --force --model grok-4.7-high --output-format text "
            "'Служебная проверка: ответь одним словом — готов'")
